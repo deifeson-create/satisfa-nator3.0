@@ -13,64 +13,22 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==============================================================================
-# 🎨 CSS BLINDADO (FIXA CORES PARA EVITAR BUGS NO DARK MODE)
-# ==============================================================================
-st.markdown("""
-<style>
-    /* Força o fundo geral para cinza claro (evita fundo preto do dark mode) */
-    .stApp {
-        background-color: #f3f4f6 !important;
-    }
-    
-    /* Estilo dos Cartões de Métricas (KPIs) */
-    div[data-testid="stMetric"] {
-        background-color: #ffffff !important;
-        padding: 15px;
-        border-radius: 12px;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    }
-    
-    /* Força a cor do texto dos KPIs para PRETO (evita letra branca no fundo branco) */
-    [data-testid="stMetricLabel"] {
-        color: #6b7280 !important; /* Cinza escuro para o título */
-        font-size: 14px !important;
-    }
-    [data-testid="stMetricValue"] {
-        color: #111827 !important; /* Preto quase absoluto para o número */
-        font-size: 26px !important;
-        font-weight: 700 !important;
-    }
-    [data-testid="stMetricDelta"] {
-        color: #1f2937 !important;
-    }
-
-    /* Expander (Caixa de Detalhes) */
-    .streamlit-expanderHeader {
-        background-color: #ffffff !important;
-        color: #000000 !important;
-        border-radius: 8px;
-    }
-    .streamlit-expanderContent {
-        background-color: #ffffff !important;
-        color: #000000 !important;
-    }
-    
-    /* Ajuste de textos gerais para garantir leitura */
-    h1, h2, h3, h4, h5, h6, p, span, label {
-        color: #1f2937 !important; /* Força texto escuro */
-    }
-    
-    /* Botões */
-    .stButton button {
-        font-weight: 600;
-    }
-</style>
-""", unsafe_allow_html=True)
+# --- 2. CARREGAMENTO DE SEGREDOS (APENAS CREDENCIAIS) ---
+try:
+    # Tenta pegar do Secrets
+    SECRET_SYS_PASS = st.secrets["geral"]["senha_sistema"]
+    API_URL = st.secrets["api"]["url"]
+    API_USER = st.secrets["api"]["user"]
+    API_PASS = st.secrets["api"]["password"]
+except:
+    # Se rodar local sem secrets, usa valores vazios ou pede na tela
+    SECRET_SYS_PASS = "admin"
+    API_URL = ""
+    API_USER = ""
+    API_PASS = ""
 
 # ==============================================================================
-# 🛠️ CONFIGURAÇÕES DE NEGÓCIO
+# 🛠️ CONFIGURAÇÕES DE NEGÓCIO (FIXAS NO CÓDIGO)
 # ==============================================================================
 
 ID_PESQUISA_V2 = "35"
@@ -89,35 +47,18 @@ CONTAS_FIXAS = {
     "3":  "LABORATÓRIO"
 }
 
-DEFAULT_API_URL = "https://ateltelecom.matrixdobrasil.ai"
-DEFAULT_USER = "Deifeson"
-DEFAULT_PASS = "vUqByWn1CjE#GRvmj"
-
-# ==============================================================================
-
-# Inicialização de Sessão
-if "token" not in st.session_state: st.session_state["token"] = None
-if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
-if "app_access" not in st.session_state: st.session_state["app_access"] = False
-
-# Tenta carregar segredos, se não existir usa string vazia
-try:
-    SECRET_PASS = st.secrets["geral"]["senha_sistema"]
-    API_URL_SECRET = st.secrets["api"]["url"]
-    API_USER_SECRET = st.secrets["api"]["user"]
-    API_PASS_SECRET = st.secrets["api"]["password"]
-except:
-    SECRET_PASS = "admin" # Senha padrão fallback
-    API_URL_SECRET = DEFAULT_API_URL
-    API_USER_SECRET = DEFAULT_USER
-    API_PASS_SECRET = DEFAULT_PASS
-
 SETORES_AGENTES = {
     'CANCELAMENTO': ['BARBOSA', 'ELOISA', 'LARISSA', 'EDUARDO', 'CAMILA', 'SAMARA'],
     'NEGOCIACAO': ['CARLA', 'LENK', 'ANA LUIZA', 'JULIETTI', 'RODRIGO', 'MONALISA', 'RAMOM', 'EDNAEL', 'LETICIA', 'RITA', 'MARIANA', 'FLAVIA S', 'URI', 'CLARA', 'WANDERSON', 'APARECIDA', 'CRISTINA', 'CAIO', 'LUKAS'],
     'SUPORTE': ['VALERIO', 'TARCISIO', 'GRANJA', 'ALICE', 'FERNANDO', 'SANTOS', 'RENAN', 'FERREIRA', 'HUEMILLY', 'LOPES', 'LAUDEMILSON', 'RAYANE', 'LAYS', 'JORGE', 'LIGIA', 'ALESSANDRO', 'GEIBSON', 'ROBERTO', 'OLIVEIRA', 'MAURÍCIO', 'AVOLO', 'CLEBER', 'ROMERIO', 'JUNIOR', 'ISABELA', 'WAGNER', 'CLAUDIA', 'ANTONIO', 'JOSE', 'LEONARDO', 'KLEBSON', 'OZENAIDE'],
     'NRC': ['RILDYVAN', 'MILENA', 'ALVES', 'MONICKE', 'AYLA', 'MARIANY', 'EDUARDA', 'MENEZES', 'JUCIENNY', 'MARIA', 'ANDREZA', 'LUZILENE', 'IGO', 'AIDA', 'CARIBÉ', 'MICHELLY', 'ADRIA', 'ERICA', 'HENRIQUE', 'SHYRLEI', 'ANNA', 'JULIA', 'FERNANDES']
 }
+
+# --- 3. ESTADO E FUNÇÕES ---
+
+if "token" not in st.session_state: st.session_state["token"] = None
+if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
+if "app_access" not in st.session_state: st.session_state["app_access"] = False
 
 def normalizar_nome(nome):
     return str(nome).strip().upper() if nome and str(nome) != "nan" else "DESCONHECIDO"
@@ -128,6 +69,12 @@ def get_setor(agente):
         if any(a in nome for a in lista):
             return setor
     return 'OUTROS'
+
+def criar_link_atendimento(protocolo):
+    if not protocolo or str(protocolo) == "0": return None
+    proto_str = str(protocolo).strip()
+    cod = proto_str[-7:] if len(proto_str) >= 7 else proto_str
+    return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
 
 # --- API ---
 
@@ -204,6 +151,7 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                         nome_pergunta = str(bloco.get("nom_pergunta", "")).strip()
                         nome_lower = nome_pergunta.lower()
                         
+                        # REGRA V3 (Ignora Internet)
                         if id_pesquisa_str == ID_PESQUISA_V3:
                             if "internet" in nome_lower:
                                 audit_perguntas["Ignoradas"].add(f"[V3] {nome_pergunta}")
@@ -216,6 +164,7 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 
+                                # DEDUPLICAÇÃO DE PROTOCOLO
                                 if protocolo and protocolo != "0":
                                     if protocolo not in dados_unicos:
                                         resp['conta_origem_id'] = str(id_conta)
@@ -241,27 +190,22 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
     progresso.empty()
     return list(dados_unicos.values()), audit_perguntas
 
-def criar_link_atendimento(protocolo):
-    if not protocolo or str(protocolo) == "0": return None
-    proto_str = str(protocolo).strip()
-    cod = proto_str[-7:] if len(proto_str) >= 7 else proto_str
-    return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
-
 # ==============================================================================
-# TELA 0: BLOQUEIO DE SEGURANÇA
+# TELA 0: BLOQUEIO (Senha do Sistema)
 # ==============================================================================
 
 if not st.session_state["app_access"]:
     
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c2:
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
+        # Container nativo (sem CSS forçado) se adapta ao tema Dark
         with st.container(border=True):
             st.markdown("<h3 style='text-align:center'>🔒 Acesso Restrito</h3>", unsafe_allow_html=True)
-            senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha do sistema")
+            senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha...")
             
             if st.button("Entrar", type="primary", use_container_width=True):
-                if senha == SECRET_PASS:
+                if senha == SECRET_SYS_PASS:
                     st.session_state["app_access"] = True
                     st.rerun()
                 else:
@@ -269,7 +213,7 @@ if not st.session_state["app_access"]:
     st.stop()
 
 # ==============================================================================
-# TELA 1: LOGIN NA API (SÓ APARECE SE PASSOU PELO BLOQUEIO)
+# TELA 1: CONEXÃO AUTOMÁTICA
 # ==============================================================================
 
 if not st.session_state["token"]:
@@ -280,37 +224,35 @@ if not st.session_state["token"]:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("### ✨ Satisfador 2.0")
-            st.caption("Versão Cloud Live")
+            st.caption("Ambiente Seguro")
             
-            url = st.text_input("URL da API", value=API_URL_SECRET)
-            user = st.text_input("Usuário", value=API_USER_SECRET)
-            pw = st.text_input("Senha", value=API_PASS_SECRET, type="password")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
-                with st.spinner("Validando credenciais..."):
-                    t = autenticar(url, user, pw)
+            # Usa as credenciais do Secrets
+            if st.button("CONECTAR AO SISTEMA", type="primary", use_container_width=True):
+                with st.spinner("Validando credenciais salvas..."):
+                    # Usa as variáveis carregadas do st.secrets
+                    t = autenticar(API_URL, API_USER, API_PASS)
                     if t:
                         st.session_state["token"] = t
                         st.rerun()
 
 # ==============================================================================
-# TELA 2: DASHBOARD (VISUAL MODERNO)
+# TELA 2: DASHBOARD (Modo Escuro Nativo)
 # ==============================================================================
 
 else:
+    # Sidebar Minimalista
     with st.sidebar:
         st.markdown("### Configurações")
         limit_page = st.slider("Velocidade (Itens/Req)", 50, 500, 100, 50)
         st.divider()
         if st.button("Sair (Logout)", use_container_width=True):
             st.session_state["token"] = None
+            st.session_state["app_access"] = False
             st.rerun()
 
     st.title("Painel de Satisfação")
     
-    # CARD DE FILTROS
+    # Filtros
     with st.container(border=True):
         c_datas, c_contas = st.columns([1, 2])
         
@@ -328,14 +270,14 @@ else:
             
         if st.button("🔎 1. Mapear Pesquisas Disponíveis", use_container_width=True):
             if contas_sel:
-                res = listar_pesquisas(DEFAULT_API_URL, st.session_state["token"], contas_sel, ini, fim)
+                res = listar_pesquisas(API_URL, st.session_state["token"], contas_sel, ini, fim)
                 st.session_state["pesquisas_list"] = res
                 if not res: st.toast("Nenhuma pesquisa encontrada!", icon="⚠️")
                 else: st.toast(f"{len(res)} pesquisas encontradas!", icon="✅")
             else:
                 st.toast("Selecione pelo menos uma conta.", icon="⚠️")
 
-    # RESULTADOS
+    # Resultados
     if st.session_state["pesquisas_list"]:
         
         with st.container(border=True):
@@ -360,7 +302,7 @@ else:
                 st.error("Selecione as pesquisas.")
             else:
                 raw_data, audit_results = baixar_dados_regra_rigida(
-                    DEFAULT_API_URL, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
+                    API_URL, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
                 )
                 
                 with st.expander("Verificar Regras Aplicadas"):
@@ -371,6 +313,7 @@ else:
                 if not raw_data:
                     st.warning("Nenhum dado encontrado.")
                 else:
+                    # PROCESSAMENTO
                     df = pd.DataFrame(raw_data)
                     if 'nom_valor' not in df: df['nom_valor'] = 0
                     if 'nom_agente' not in df: df['nom_agente'] = "DESCONHECIDO"
