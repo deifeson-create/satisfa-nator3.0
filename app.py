@@ -9,58 +9,69 @@ from datetime import datetime, timedelta
 st.set_page_config(
     layout="wide", 
     page_title="Satisfador 2.0", 
-    page_icon="☁️",
+    page_icon="✨",
     initial_sidebar_state="collapsed"
 )
 
 # ==============================================================================
-# 🔒 SEGURANÇA - TELA DE BLOQUEIO
+# 🎨 CSS BLINDADO (FIXA CORES PARA EVITAR BUGS NO DARK MODE)
 # ==============================================================================
-if "app_access" not in st.session_state:
-    st.session_state["app_access"] = False
-
-if not st.session_state["app_access"]:
-    st.markdown("""
-    <style>
-        .stApp { background-color: #f8f9fa; }
-        .lock-screen {
-            max-width: 400px; margin: 100px auto; padding: 30px;
-            background: white; border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("""
+<style>
+    /* Força o fundo geral para cinza claro (evita fundo preto do dark mode) */
+    .stApp {
+        background-color: #f3f4f6 !important;
+    }
     
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        st.markdown("<div class='lock-screen'><h2>🔒 Acesso Restrito</h2>", unsafe_allow_html=True)
-        senha_sistema = st.text_input("Digite a senha do sistema", type="password")
-        
-        if st.button("ENTRAR", type="primary", use_container_width=True):
-            # Verifica a senha configurada nos Secrets
-            if senha_sistema == st.secrets["geral"]["senha_sistema"]:
-                st.session_state["app_access"] = True
-                st.rerun()
-            else:
-                st.error("Senha incorreta!")
-        st.markdown("</div>", unsafe_allow_html=True)
+    /* Estilo dos Cartões de Métricas (KPIs) */
+    div[data-testid="stMetric"] {
+        background-color: #ffffff !important;
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
     
-    st.stop() # Para a execução aqui se não tiver senha
+    /* Força a cor do texto dos KPIs para PRETO (evita letra branca no fundo branco) */
+    [data-testid="stMetricLabel"] {
+        color: #6b7280 !important; /* Cinza escuro para o título */
+        font-size: 14px !important;
+    }
+    [data-testid="stMetricValue"] {
+        color: #111827 !important; /* Preto quase absoluto para o número */
+        font-size: 26px !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stMetricDelta"] {
+        color: #1f2937 !important;
+    }
+
+    /* Expander (Caixa de Detalhes) */
+    .streamlit-expanderHeader {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border-radius: 8px;
+    }
+    .streamlit-expanderContent {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    
+    /* Ajuste de textos gerais para garantir leitura */
+    h1, h2, h3, h4, h5, h6, p, span, label {
+        color: #1f2937 !important; /* Força texto escuro */
+    }
+    
+    /* Botões */
+    .stButton button {
+        font-weight: 600;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ==============================================================================
-# 🛠️ CONFIGURAÇÕES E CARREGAMENTO DE SEGREDOS
+# 🛠️ CONFIGURAÇÕES DE NEGÓCIO
 # ==============================================================================
-
-# Tenta carregar credenciais dos Secrets (Nuvem) ou usa vazio se não achar
-try:
-    API_URL_SECRET = st.secrets["api"]["url"]
-    API_USER_SECRET = st.secrets["api"]["user"]
-    API_PASS_SECRET = st.secrets["api"]["password"]
-except:
-    # Fallback para rodar local sem secrets configurado (apenas para teste)
-    API_URL_SECRET = ""
-    API_USER_SECRET = ""
-    API_PASS_SECRET = ""
 
 ID_PESQUISA_V2 = "35"
 ID_PESQUISA_V3 = "43"
@@ -78,33 +89,28 @@ CONTAS_FIXAS = {
     "3":  "LABORATÓRIO"
 }
 
-# ==============================================================================
-# INÍCIO DO SISTEMA REAL
+DEFAULT_API_URL = "https://ateltelecom.matrixdobrasil.ai"
+DEFAULT_USER = "Deifeson"
+DEFAULT_PASS = "vUqByWn1CjE#GRvmj"
+
 # ==============================================================================
 
-# --- CSS PERSONALIZADO ---
-st.markdown("""
-<style>
-    .stMetric {
-        background-color: #ffffff;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    [data-testid="stMetricValue"] {
-        font-size: 24px;
-        font-weight: bold;
-        color: #1f2937;
-    }
-    .stApp {
-        background-color: #f3f4f6;
-    }
-</style>
-""", unsafe_allow_html=True)
-
+# Inicialização de Sessão
 if "token" not in st.session_state: st.session_state["token"] = None
 if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
+if "app_access" not in st.session_state: st.session_state["app_access"] = False
+
+# Tenta carregar segredos, se não existir usa string vazia
+try:
+    SECRET_PASS = st.secrets["geral"]["senha_sistema"]
+    API_URL_SECRET = st.secrets["api"]["url"]
+    API_USER_SECRET = st.secrets["api"]["user"]
+    API_PASS_SECRET = st.secrets["api"]["password"]
+except:
+    SECRET_PASS = "admin" # Senha padrão fallback
+    API_URL_SECRET = DEFAULT_API_URL
+    API_USER_SECRET = DEFAULT_USER
+    API_PASS_SECRET = DEFAULT_PASS
 
 SETORES_AGENTES = {
     'CANCELAMENTO': ['BARBOSA', 'ELOISA', 'LARISSA', 'EDUARDO', 'CAMILA', 'SAMARA'],
@@ -242,7 +248,28 @@ def criar_link_atendimento(protocolo):
     return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
 
 # ==============================================================================
-# TELA 1: CONEXÃO API (AGORA PREENCHIDA AUTOMATICAMENTE PELOS SECRETS)
+# TELA 0: BLOQUEIO DE SEGURANÇA
+# ==============================================================================
+
+if not st.session_state["app_access"]:
+    
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("<h3 style='text-align:center'>🔒 Acesso Restrito</h3>", unsafe_allow_html=True)
+            senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha do sistema")
+            
+            if st.button("Entrar", type="primary", use_container_width=True):
+                if senha == SECRET_PASS:
+                    st.session_state["app_access"] = True
+                    st.rerun()
+                else:
+                    st.error("Senha incorreta.")
+    st.stop()
+
+# ==============================================================================
+# TELA 1: LOGIN NA API (SÓ APARECE SE PASSOU PELO BLOQUEIO)
 # ==============================================================================
 
 if not st.session_state["token"]:
@@ -252,71 +279,79 @@ if not st.session_state["token"]:
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
-            st.markdown("### 🚀 Conectar à Matrix")
-            st.caption("Credenciais carregadas com segurança.")
+            st.markdown("### ✨ Satisfador 2.0")
+            st.caption("Versão Cloud Live")
             
-            # Campos vêm preenchidos com os segredos, mas editáveis se precisar
             url = st.text_input("URL da API", value=API_URL_SECRET)
             user = st.text_input("Usuário", value=API_USER_SECRET)
             pw = st.text_input("Senha", value=API_PASS_SECRET, type="password")
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            if st.button("CONECTAR", type="primary", use_container_width=True):
-                with st.spinner("Autenticando..."):
+            if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
+                with st.spinner("Validando credenciais..."):
                     t = autenticar(url, user, pw)
                     if t:
                         st.session_state["token"] = t
                         st.rerun()
 
 # ==============================================================================
-# TELA 2: DASHBOARD
+# TELA 2: DASHBOARD (VISUAL MODERNO)
 # ==============================================================================
 
 else:
     with st.sidebar:
-        st.markdown("### Opções")
+        st.markdown("### Configurações")
         limit_page = st.slider("Velocidade (Itens/Req)", 50, 500, 100, 50)
-        if st.button("Sair / Logout", use_container_width=True):
+        st.divider()
+        if st.button("Sair (Logout)", use_container_width=True):
             st.session_state["token"] = None
-            st.session_state["app_access"] = False # Bloqueia tudo de novo
             st.rerun()
 
     st.title("Painel de Satisfação")
     
+    # CARD DE FILTROS
     with st.container(border=True):
         c_datas, c_contas = st.columns([1, 2])
+        
         with c_datas:
             st.markdown("**Período**")
             d_col1, d_col2 = st.columns(2)
             ini = d_col1.date_input("Início", datetime.today() - timedelta(days=1), label_visibility="collapsed")
             fim = d_col2.date_input("Fim", datetime.today(), label_visibility="collapsed")
+            
         with c_contas:
-            st.markdown("**Contas**")
+            st.markdown("**Contas Alvo**")
             ids = list(CONTAS_FIXAS.keys())
             padrao = ["1"] if "1" in ids else None
             contas_sel = st.multiselect("Contas", ids, format_func=lambda x: f"{x} - {CONTAS_FIXAS[x]}", default=padrao, label_visibility="collapsed")
             
         if st.button("🔎 1. Mapear Pesquisas Disponíveis", use_container_width=True):
             if contas_sel:
-                res = listar_pesquisas(API_URL_SECRET, st.session_state["token"], contas_sel, ini, fim)
+                res = listar_pesquisas(DEFAULT_API_URL, st.session_state["token"], contas_sel, ini, fim)
                 st.session_state["pesquisas_list"] = res
                 if not res: st.toast("Nenhuma pesquisa encontrada!", icon="⚠️")
                 else: st.toast(f"{len(res)} pesquisas encontradas!", icon="✅")
             else:
                 st.toast("Selecione pelo menos uma conta.", icon="⚠️")
 
+    # RESULTADOS
     if st.session_state["pesquisas_list"]:
+        
         with st.container(border=True):
             st.markdown("#### 2. Análise")
+            
             c_pesq, c_setor, c_btn = st.columns([2, 1, 1])
+            
             with c_pesq:
                 opts = {f"{p['id']} - {p['nome']}": p['id'] for p in st.session_state["pesquisas_list"]}
                 defaults = [k for k in opts.keys() if ID_PESQUISA_V2 in k or ID_PESQUISA_V3 in k]
                 sels = st.multiselect("Pesquisas", list(opts.keys()), default=defaults, label_visibility="collapsed")
                 pesquisas_ids = [opts[s] for s in sels]
+                
             with c_setor:
                 setor_sel = st.selectbox("Setor", list(SETORES_AGENTES.keys()) + ["TODOS", "OUTROS"], label_visibility="collapsed")
+                
             with c_btn:
                 gerar = st.button("✨ GERAR DASHBOARD", type="primary", use_container_width=True)
 
@@ -325,7 +360,7 @@ else:
                 st.error("Selecione as pesquisas.")
             else:
                 raw_data, audit_results = baixar_dados_regra_rigida(
-                    API_URL_SECRET, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
+                    DEFAULT_API_URL, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
                 )
                 
                 with st.expander("Verificar Regras Aplicadas"):
@@ -356,11 +391,11 @@ else:
                     else:
                         total = len(df_final)
                         prom = len(df_final[df_final['Nota'] >= 8])
-                        det = len(df_final[df_final['Nota'] <= 6])
                         sat_score = (prom / total * 100) if total > 0 else 0
                         media = df_final['Nota'].mean()
                         
                         st.markdown("### Resultados")
+                        
                         k1, k2, k3, k4 = st.columns(4)
                         k1.metric("Total Avaliações", total)
                         k2.metric("Promotores (8-10)", prom)
@@ -368,6 +403,7 @@ else:
                         k4.metric("Nota Média", f"{media:.2f}")
                         
                         g1, g2 = st.columns([1, 2])
+                        
                         with g1:
                             labels = ['Promotores', 'Outros']
                             colors = ['#10b981', '#ef4444'] 
@@ -375,20 +411,25 @@ else:
                             fig.update_layout(showlegend=False, margin=dict(t=20,b=20,l=20,r=20), height=250,
                                               annotations=[dict(text=f"{sat_score:.0f}%", x=0.5, y=0.5, font_size=24, showarrow=False)])
                             st.plotly_chart(fig, use_container_width=True)
+                            
                         with g2:
                             rank = df_final.groupby('Agente').agg(
                                 Qtd=('Nota', 'count'),
                                 Promotores=('Nota', lambda x: (x >= 8).sum()),
                                 Media=('Nota', 'mean')
                             ).reset_index()
-                            rank['Sat %'] = (rank['Promotores'] / rank['Qtd'] * 100).round(1)
+                            rank['Sat %'] = (rank['Promotores'] / rank['Qtd'] * 100).round(2)
                             rank = rank.sort_values('Sat %', ascending=True) 
-                            fig_bar = px.bar(rank, x='Sat %', y='Agente', orientation='h', text='Sat %', title="Ranking por Agente", color='Sat %', color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
+                            
+                            fig_bar = px.bar(rank, x='Sat %', y='Agente', orientation='h', text='Sat %', 
+                                             title="Ranking por Agente", color='Sat %', 
+                                             color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
                             fig_bar.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                             fig_bar.update_layout(xaxis_title="", yaxis_title="", height=300, coloraxis_showscale=False)
                             st.plotly_chart(fig_bar, use_container_width=True)
                         
-                        st.subheader("📋 Detalhamento")
+                        st.subheader("📋 Detalhamento dos Atendimentos")
+                        
                         st.dataframe(
                             df_final[['dat_resposta', 'Nome_Conta', 'Agente', 'Nota', 'nom_resposta', 'Link_Acesso']],
                             column_config={
@@ -399,5 +440,6 @@ else:
                             },
                             use_container_width=True, hide_index=True
                         )
+                        
                         csv = df_final.to_csv(index=False).encode('utf-8')
                         st.download_button("📥 Baixar Relatório (CSV)", csv, "relatorio_satisfador.csv", "text/csv", use_container_width=True)
