@@ -13,16 +13,16 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. CARREGAMENTO DE SEGREDOS (APENAS CREDENCIAIS) ---
+# --- 2. CARREGAMENTO SEGURO DE CREDENCIAIS ---
+# O código tenta ler dos Secrets. Se não achar, usa vazio (não expõe nada).
 try:
-    # Tenta pegar do Secrets
     SECRET_SYS_PASS = st.secrets["geral"]["senha_sistema"]
     API_URL = st.secrets["api"]["url"]
     API_USER = st.secrets["api"]["user"]
     API_PASS = st.secrets["api"]["password"]
-except:
-    # Se rodar local sem secrets, usa valores vazios ou pede na tela
-    SECRET_SYS_PASS = "admin"
+except Exception:
+    # Em caso de erro (rodando local sem config), define vazio para não quebrar
+    SECRET_SYS_PASS = ""
     API_URL = ""
     API_USER = ""
     API_PASS = ""
@@ -54,7 +54,7 @@ SETORES_AGENTES = {
     'NRC': ['RILDYVAN', 'MILENA', 'ALVES', 'MONICKE', 'AYLA', 'MARIANY', 'EDUARDA', 'MENEZES', 'JUCIENNY', 'MARIA', 'ANDREZA', 'LUZILENE', 'IGO', 'AIDA', 'CARIBÉ', 'MICHELLY', 'ADRIA', 'ERICA', 'HENRIQUE', 'SHYRLEI', 'ANNA', 'JULIA', 'FERNANDES']
 }
 
-# --- 3. ESTADO E FUNÇÕES ---
+# --- 3. FUNÇÕES AUXILIARES ---
 
 if "token" not in st.session_state: st.session_state["token"] = None
 if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
@@ -79,6 +79,10 @@ def criar_link_atendimento(protocolo):
 # --- API ---
 
 def autenticar(url, login, senha):
+    if not url or not login or not senha:
+        st.toast("Credenciais incompletas nos Secrets!", icon="⚠️")
+        return None
+        
     try:
         r = requests.post(f"{url}/rest/v2/authuser", json={"login": login, "chave": senha}, timeout=20)
         if r.status_code == 200 and r.json().get("success"):
@@ -151,7 +155,6 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                         nome_pergunta = str(bloco.get("nom_pergunta", "")).strip()
                         nome_lower = nome_pergunta.lower()
                         
-                        # REGRA V3 (Ignora Internet)
                         if id_pesquisa_str == ID_PESQUISA_V3:
                             if "internet" in nome_lower:
                                 audit_perguntas["Ignoradas"].add(f"[V3] {nome_pergunta}")
@@ -164,7 +167,6 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 
-                                # DEDUPLICAÇÃO DE PROTOCOLO
                                 if protocolo and protocolo != "0":
                                     if protocolo not in dados_unicos:
                                         resp['conta_origem_id'] = str(id_conta)
@@ -191,7 +193,7 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
     return list(dados_unicos.values()), audit_perguntas
 
 # ==============================================================================
-# TELA 0: BLOQUEIO (Senha do Sistema)
+# TELA 0: BLOQUEIO DE SEGURANÇA (Valida senha do secrets)
 # ==============================================================================
 
 if not st.session_state["app_access"]:
@@ -199,21 +201,24 @@ if not st.session_state["app_access"]:
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
-        # Container nativo (sem CSS forçado) se adapta ao tema Dark
         with st.container(border=True):
             st.markdown("<h3 style='text-align:center'>🔒 Acesso Restrito</h3>", unsafe_allow_html=True)
-            senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha...")
             
-            if st.button("Entrar", type="primary", use_container_width=True):
-                if senha == SECRET_SYS_PASS:
-                    st.session_state["app_access"] = True
-                    st.rerun()
-                else:
-                    st.error("Senha incorreta.")
+            if not SECRET_SYS_PASS:
+                st.error("ERRO: Senha do sistema não configurada nos Secrets!")
+            else:
+                senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha do sistema")
+                
+                if st.button("Entrar", type="primary", use_container_width=True):
+                    if senha == SECRET_SYS_PASS:
+                        st.session_state["app_access"] = True
+                        st.rerun()
+                    else:
+                        st.error("Senha incorreta.")
     st.stop()
 
 # ==============================================================================
-# TELA 1: CONEXÃO AUTOMÁTICA
+# TELA 1: LOGIN NA API (Usa credenciais dos Secrets)
 # ==============================================================================
 
 if not st.session_state["token"]:
@@ -224,23 +229,23 @@ if not st.session_state["token"]:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("### ✨ Satisfador 2.0")
-            st.caption("Ambiente Seguro")
+            st.caption("Conexão Segura (Cloud)")
             
-            # Usa as credenciais do Secrets
-            if st.button("CONECTAR AO SISTEMA", type="primary", use_container_width=True):
-                with st.spinner("Validando credenciais salvas..."):
-                    # Usa as variáveis carregadas do st.secrets
+            # Mostra apenas status, não os dados
+            st.info(f"Conectando em: {API_URL}")
+            
+            if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
+                with st.spinner("Autenticando via Secrets..."):
                     t = autenticar(API_URL, API_USER, API_PASS)
                     if t:
                         st.session_state["token"] = t
                         st.rerun()
 
 # ==============================================================================
-# TELA 2: DASHBOARD (Modo Escuro Nativo)
+# TELA 2: DASHBOARD
 # ==============================================================================
 
 else:
-    # Sidebar Minimalista
     with st.sidebar:
         st.markdown("### Configurações")
         limit_page = st.slider("Velocidade (Itens/Req)", 50, 500, 100, 50)
@@ -252,7 +257,7 @@ else:
 
     st.title("Painel de Satisfação")
     
-    # Filtros
+    # --- FILTROS ---
     with st.container(border=True):
         c_datas, c_contas = st.columns([1, 2])
         
@@ -261,7 +266,6 @@ else:
             d_col1, d_col2 = st.columns(2)
             ini = d_col1.date_input("Início", datetime.today() - timedelta(days=1), label_visibility="collapsed")
             fim = d_col2.date_input("Fim", datetime.today(), label_visibility="collapsed")
-            
         with c_contas:
             st.markdown("**Contas Alvo**")
             ids = list(CONTAS_FIXAS.keys())
@@ -277,23 +281,18 @@ else:
             else:
                 st.toast("Selecione pelo menos uma conta.", icon="⚠️")
 
-    # Resultados
+    # --- PROCESSAMENTO ---
     if st.session_state["pesquisas_list"]:
-        
         with st.container(border=True):
             st.markdown("#### 2. Análise")
-            
             c_pesq, c_setor, c_btn = st.columns([2, 1, 1])
-            
             with c_pesq:
                 opts = {f"{p['id']} - {p['nome']}": p['id'] for p in st.session_state["pesquisas_list"]}
                 defaults = [k for k in opts.keys() if ID_PESQUISA_V2 in k or ID_PESQUISA_V3 in k]
                 sels = st.multiselect("Pesquisas", list(opts.keys()), default=defaults, label_visibility="collapsed")
                 pesquisas_ids = [opts[s] for s in sels]
-                
             with c_setor:
                 setor_sel = st.selectbox("Setor", list(SETORES_AGENTES.keys()) + ["TODOS", "OUTROS"], label_visibility="collapsed")
-                
             with c_btn:
                 gerar = st.button("✨ GERAR DASHBOARD", type="primary", use_container_width=True)
 
@@ -313,7 +312,7 @@ else:
                 if not raw_data:
                     st.warning("Nenhum dado encontrado.")
                 else:
-                    # PROCESSAMENTO
+                    # --- PROCESSAMENTO ---
                     df = pd.DataFrame(raw_data)
                     if 'nom_valor' not in df: df['nom_valor'] = 0
                     if 'nom_agente' not in df: df['nom_agente'] = "DESCONHECIDO"
@@ -334,6 +333,7 @@ else:
                     else:
                         total = len(df_final)
                         prom = len(df_final[df_final['Nota'] >= 8])
+                        det = len(df_final[df_final['Nota'] <= 6])
                         sat_score = (prom / total * 100) if total > 0 else 0
                         media = df_final['Nota'].mean()
                         
@@ -346,15 +346,13 @@ else:
                         k4.metric("Nota Média", f"{media:.2f}")
                         
                         g1, g2 = st.columns([1, 2])
-                        
                         with g1:
                             labels = ['Promotores', 'Outros']
                             colors = ['#10b981', '#ef4444'] 
                             fig = go.Figure(data=[go.Pie(labels=labels, values=[prom, total-prom], hole=.7, marker_colors=colors)])
                             fig.update_layout(showlegend=False, margin=dict(t=20,b=20,l=20,r=20), height=250,
-                                              annotations=[dict(text=f"{sat_score:.0f}%", x=0.5, y=0.5, font_size=24, showarrow=False)])
+                                              annotations=[dict(text=f"{sat_score:.2f}%", x=0.5, y=0.5, font_size=24, showarrow=False)])
                             st.plotly_chart(fig, use_container_width=True)
-                            
                         with g2:
                             rank = df_final.groupby('Agente').agg(
                                 Qtd=('Nota', 'count'),
@@ -363,16 +361,12 @@ else:
                             ).reset_index()
                             rank['Sat %'] = (rank['Promotores'] / rank['Qtd'] * 100).round(2)
                             rank = rank.sort_values('Sat %', ascending=True) 
-                            
-                            fig_bar = px.bar(rank, x='Sat %', y='Agente', orientation='h', text='Sat %', 
-                                             title="Ranking por Agente", color='Sat %', 
-                                             color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
+                            fig_bar = px.bar(rank, x='Sat %', y='Agente', orientation='h', text='Sat %', title="Ranking por Agente", color='Sat %', color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
                             fig_bar.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                             fig_bar.update_layout(xaxis_title="", yaxis_title="", height=300, coloraxis_showscale=False)
                             st.plotly_chart(fig_bar, use_container_width=True)
                         
                         st.subheader("📋 Detalhamento dos Atendimentos")
-                        
                         st.dataframe(
                             df_final[['dat_resposta', 'Nome_Conta', 'Agente', 'Nota', 'nom_resposta', 'Link_Acesso']],
                             column_config={
@@ -383,6 +377,5 @@ else:
                             },
                             use_container_width=True, hide_index=True
                         )
-                        
                         csv = df_final.to_csv(index=False).encode('utf-8')
                         st.download_button("📥 Baixar Relatório (CSV)", csv, "relatorio_satisfador.csv", "text/csv", use_container_width=True)
