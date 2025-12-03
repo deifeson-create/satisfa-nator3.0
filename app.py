@@ -8,27 +8,25 @@ from datetime import datetime, timedelta
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     layout="wide", 
-    page_title="Satisfador 2.0", 
-    page_icon="✨",
+    page_title="Satisfador 3.0", 
+    page_icon="🚀",
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. CARREGAMENTO SEGURO DE CREDENCIAIS ---
-# O código tenta ler dos Secrets. Se não achar, usa vazio (não expõe nada).
+# --- 2. CARREGAMENTO SEGURO DE CREDENCIAIS (SECRETS) ---
 try:
     SECRET_SYS_PASS = st.secrets["geral"]["senha_sistema"]
     API_URL = st.secrets["api"]["url"]
     API_USER = st.secrets["api"]["user"]
     API_PASS = st.secrets["api"]["password"]
-except Exception:
-    # Em caso de erro (rodando local sem config), define vazio para não quebrar
-    SECRET_SYS_PASS = ""
+except:
+    SECRET_SYS_PASS = "admin"
     API_URL = ""
     API_USER = ""
     API_PASS = ""
 
 # ==============================================================================
-# 🛠️ CONFIGURAÇÕES DE NEGÓCIO (FIXAS NO CÓDIGO)
+# 🛠️ CONFIGURAÇÕES DE NEGÓCIO
 # ==============================================================================
 
 ID_PESQUISA_V2 = "35"
@@ -82,7 +80,6 @@ def autenticar(url, login, senha):
     if not url or not login or not senha:
         st.toast("Credenciais incompletas nos Secrets!", icon="⚠️")
         return None
-        
     try:
         r = requests.post(f"{url}/rest/v2/authuser", json={"login": login, "chave": senha}, timeout=20)
         if r.status_code == 200 and r.json().get("success"):
@@ -110,7 +107,6 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
                         encontradas.append({"id": str(row.get("cod_pesquisa")), "nome": row.get("nom_pesquisa")})
                     if len(rows) < 100: break
                 except: break
-                
     return list({v['id']: v for v in encontradas}.values())
 
 def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
@@ -155,6 +151,7 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                         nome_pergunta = str(bloco.get("nom_pergunta", "")).strip()
                         nome_lower = nome_pergunta.lower()
                         
+                        # Regra V3
                         if id_pesquisa_str == ID_PESQUISA_V3:
                             if "internet" in nome_lower:
                                 audit_perguntas["Ignoradas"].add(f"[V3] {nome_pergunta}")
@@ -193,13 +190,13 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
     return list(dados_unicos.values()), audit_perguntas
 
 # ==============================================================================
-# TELA 0: BLOQUEIO DE SEGURANÇA (Valida senha do secrets)
+# TELA 0: BLOQUEIO DE SEGURANÇA
 # ==============================================================================
 
 if not st.session_state["app_access"]:
     
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("<h3 style='text-align:center'>🔒 Acesso Restrito</h3>", unsafe_allow_html=True)
@@ -218,7 +215,7 @@ if not st.session_state["app_access"]:
     st.stop()
 
 # ==============================================================================
-# TELA 1: LOGIN NA API (Usa credenciais dos Secrets)
+# TELA 1: LOGIN NA API
 # ==============================================================================
 
 if not st.session_state["token"]:
@@ -228,13 +225,14 @@ if not st.session_state["token"]:
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
-            st.markdown("### ✨ Satisfador 2.0")
-            st.caption("Conexão Segura (Cloud)")
+            st.markdown("### ✨ Satisfador 3.0")
+            st.caption("Ambiente Seguro Cloud")
             
-            # Mostra apenas status, não os dados
-            st.info(f"Conectando em: {API_URL}")
+            # Mostra apenas que está configurado
+            if API_URL: st.info(f"API Configurada: {API_URL}")
+            else: st.warning("API não configurada nos Secrets!")
             
-            if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
+            if st.button("CONECTAR AO SISTEMA", type="primary", use_container_width=True):
                 with st.spinner("Autenticando via Secrets..."):
                     t = autenticar(API_URL, API_USER, API_PASS)
                     if t:
@@ -246,6 +244,7 @@ if not st.session_state["token"]:
 # ==============================================================================
 
 else:
+    # Sidebar Minimalista
     with st.sidebar:
         st.markdown("### Configurações")
         limit_page = st.slider("Velocidade (Itens/Req)", 50, 500, 100, 50)
@@ -316,10 +315,16 @@ else:
                     df = pd.DataFrame(raw_data)
                     if 'nom_valor' not in df: df['nom_valor'] = 0
                     if 'nom_agente' not in df: df['nom_agente'] = "DESCONHECIDO"
+                    if 'dat_resposta' not in df: df['dat_resposta'] = datetime.today()
                     
+                    # Conversões
                     df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce')
                     df = df.dropna(subset=['Nota']) 
                     df['Nota'] = df['Nota'].astype(int)
+                    
+                    # Cria coluna de DIA para o gráfico de tendência
+                    df['Data'] = pd.to_datetime(df['dat_resposta'])
+                    df['Dia'] = df['Data'].dt.strftime('%d/%m')
                     
                     df['Agente'] = df['nom_agente'].apply(normalizar_nome)
                     df['Setor'] = df['Agente'].apply(get_setor)
@@ -331,42 +336,105 @@ else:
                     if df_final.empty:
                         st.info("Sem dados para este setor.")
                     else:
+                        # --- CÁLCULOS ---
                         total = len(df_final)
                         prom = len(df_final[df_final['Nota'] >= 8])
                         det = len(df_final[df_final['Nota'] <= 6])
                         sat_score = (prom / total * 100) if total > 0 else 0
                         media = df_final['Nota'].mean()
                         
-                        st.markdown("### Resultados")
+                        st.divider()
+                        st.markdown("### Resultados Gerais")
                         
+                        # KPI CARDS
                         k1, k2, k3, k4 = st.columns(4)
                         k1.metric("Total Avaliações", total)
                         k2.metric("Promotores (8-10)", prom)
                         k3.metric("Satisfação (CSAT)", f"{sat_score:.2f}%", delta_color="normal")
                         k4.metric("Nota Média", f"{media:.2f}")
                         
+                        st.write("")
+                        
+                        # -----------------------------------------------------------
+                        # NOVIDADE 1: GRÁFICO DE TENDÊNCIA (LINHA DO TEMPO)
+                        # -----------------------------------------------------------
+                        st.markdown("#### 📈 Tendência de Satisfação (Dia a Dia)")
+                        
+                        trend = df_final.groupby('Dia').agg(
+                            Total=('Nota', 'count'),
+                            Promotores=('Nota', lambda x: (x >= 8).sum())
+                        ).reset_index()
+                        trend['Sat %'] = (trend['Promotores'] / trend['Total'] * 100).round(1)
+                        
+                        fig_line = px.line(trend, x='Dia', y='Sat %', markers=True, text='Sat %')
+                        fig_line.update_traces(line_color='#2563eb', line_width=3, textposition="top center")
+                        fig_line.update_layout(height=300, yaxis_range=[0, 110], yaxis_title="Satisfação %", xaxis_title=None)
+                        st.plotly_chart(fig_line, use_container_width=True)
+
+                        st.divider()
+                        
+                        # -----------------------------------------------------------
+                        # NOVIDADE 2: DESTAQUES E ATENÇÃO (RANKING INTELIGENTE)
+                        # -----------------------------------------------------------
+                        
+                        # Preparar ranking geral para usar nos cards
+                        rank_geral = df_final.groupby('Agente').agg(
+                            Qtd=('Nota', 'count'),
+                            Promotores=('Nota', lambda x: (x >= 8).sum()),
+                            Media=('Nota', 'mean')
+                        ).reset_index()
+                        rank_geral['Sat %'] = (rank_geral['Promotores'] / rank_geral['Qtd'] * 100).round(2)
+                        
+                        # Filtra para "Atenção" apenas quem tem volume relevante (ex: >= 3 avaliações)
+                        # Para não alertar sobre quem teve 1 atendimento e tirou nota baixa por azar
+                        rank_validos = rank_geral[rank_geral['Qtd'] >= 3]
+                        
+                        top_3 = rank_geral.sort_values(['Sat %', 'Qtd'], ascending=[False, False]).head(3)
+                        bottom_3 = rank_validos.sort_values(['Sat %', 'Qtd'], ascending=[True, False]).head(3)
+
+                        c_top, c_low = st.columns(2)
+                        
+                        with c_top:
+                            st.markdown("#### 🏆 Top 3 Destaques")
+                            for idx, row in top_3.iterrows():
+                                st.success(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']} avaliações)")
+                                
+                        with c_low:
+                            st.markdown("#### ⚠️ Pontos de Atenção (Bottom 3)")
+                            if bottom_3.empty:
+                                st.info("Sem dados suficientes para gerar alertas (Min. 3 avaliações).")
+                            else:
+                                for idx, row in bottom_3.iterrows():
+                                    st.error(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']} avaliações)")
+
+                        st.divider()
+
+                        # GRÁFICOS ORIGINAIS (ROSCA E BARRAS)
                         g1, g2 = st.columns([1, 2])
+                        
                         with g1:
+                            st.markdown("#### Distribuição")
                             labels = ['Promotores', 'Outros']
                             colors = ['#10b981', '#ef4444'] 
                             fig = go.Figure(data=[go.Pie(labels=labels, values=[prom, total-prom], hole=.7, marker_colors=colors)])
                             fig.update_layout(showlegend=False, margin=dict(t=20,b=20,l=20,r=20), height=250,
                                               annotations=[dict(text=f"{sat_score:.2f}%", x=0.5, y=0.5, font_size=24, showarrow=False)])
                             st.plotly_chart(fig, use_container_width=True)
+                            
                         with g2:
-                            rank = df_final.groupby('Agente').agg(
-                                Qtd=('Nota', 'count'),
-                                Promotores=('Nota', lambda x: (x >= 8).sum()),
-                                Media=('Nota', 'mean')
-                            ).reset_index()
-                            rank['Sat %'] = (rank['Promotores'] / rank['Qtd'] * 100).round(2)
-                            rank = rank.sort_values('Sat %', ascending=True) 
-                            fig_bar = px.bar(rank, x='Sat %', y='Agente', orientation='h', text='Sat %', title="Ranking por Agente", color='Sat %', color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
+                            st.markdown(f"#### Ranking Completo ({setor_sel})")
+                            rank_chart = rank_geral.sort_values('Sat %', ascending=True) 
+                            
+                            fig_bar = px.bar(rank_chart, x='Sat %', y='Agente', orientation='h', text='Sat %', 
+                                             color='Sat %', 
+                                             color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
                             fig_bar.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                            fig_bar.update_layout(xaxis_title="", yaxis_title="", height=300, coloraxis_showscale=False)
+                            fig_bar.update_layout(xaxis_title="", yaxis_title="", height=350, coloraxis_showscale=False)
                             st.plotly_chart(fig_bar, use_container_width=True)
                         
+                        # TABELA DETALHADA
                         st.subheader("📋 Detalhamento dos Atendimentos")
+                        
                         st.dataframe(
                             df_final[['dat_resposta', 'Nome_Conta', 'Agente', 'Nota', 'nom_resposta', 'Link_Acesso']],
                             column_config={
@@ -377,5 +445,6 @@ else:
                             },
                             use_container_width=True, hide_index=True
                         )
+                        
                         csv = df_final.to_csv(index=False).encode('utf-8')
                         st.download_button("📥 Baixar Relatório (CSV)", csv, "relatorio_satisfador.csv", "text/csv", use_container_width=True)
