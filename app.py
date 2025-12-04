@@ -406,16 +406,11 @@ else:
                 df_final = df.copy()
                 
                 if setor_sel != "TODOS":
-                    # 1. Identificar Serviços do Setor (baseado nos Agentes Ativos desse setor nos dados)
                     servicos_vinculados = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
-                    
-                    # 2. Máscara Inteligente:
-                    # Inclui quem é do Setor OFICIALMENTE ... OU ... quem fez os SERVIÇOS desse setor
                     mask_setor = (df_final['Setor'] == setor_sel) | (df_final['Serviço'].isin(servicos_vinculados))
                     df_final = df_final[mask_setor]
                 
                 if servicos_sel:
-                    # Se o usuário escolheu serviços manualmente, respeita apenas eles
                     df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
                 
                 if df_final.empty:
@@ -426,17 +421,19 @@ else:
                     csat = (prom / total * 100)
                     media = df_final['Nota'].mean()
 
+                    # AJUSTADO PARA 2 CASAS DECIMAIS
                     st.markdown("### Resultados")
                     k1, k2, k3, k4 = st.columns(4)
                     k1.metric("Total", total)
                     k2.metric("Promotores", prom)
-                    k3.metric("CSAT", f"{csat:.1f}%")
+                    k3.metric("CSAT", f"{csat:.2f}%")
                     k4.metric("Média", f"{media:.2f}")
                     
                     st.divider()
                     
+                    # AJUSTADO PARA 2 CASAS DECIMAIS
                     trend = df_final.groupby('Dia').agg(Total=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum())).reset_index()
-                    trend['Sat'] = (trend['Prom']/trend['Total']*100).round(1)
+                    trend['Sat'] = (trend['Prom']/trend['Total']*100).round(2)
                     fig = px.line(trend, x='Dia', y='Sat', markers=True, title="Evolução", text='Sat')
                     fig.update_traces(line_color='#2563eb', textposition="top center")
                     fig.update_layout(yaxis_range=[0, 115], height=300)
@@ -444,20 +441,21 @@ else:
                     
                     st.divider()
                     
+                    # AJUSTADO PARA 2 CASAS DECIMAIS
                     col_rank, col_pie = st.columns([2, 1])
                     rank = df_final.groupby('Agente').agg(Qtd=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum()), Media=('Nota', 'mean')).reset_index()
-                    rank['CSAT'] = (rank['Prom']/rank['Qtd']*100).round(1)
+                    rank['CSAT'] = (rank['Prom']/rank['Qtd']*100).round(2)
                     rank = rank.sort_values('CSAT', ascending=False)
                     
                     with col_rank:
                         st.dataframe(
                             rank[['Agente', 'CSAT', 'Qtd', 'Media']],
-                            column_config={"CSAT": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)},
+                            column_config={"CSAT": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100)},
                             hide_index=True, use_container_width=True
                         )
                     with col_pie:
                         fig_pie = go.Figure(data=[go.Pie(labels=['Prom', 'Outros'], values=[prom, total-prom], hole=.6, marker_colors=['#10b981', '#ef4444'])])
-                        fig_pie.update_layout(showlegend=False, height=250, margin=dict(t=0,b=0,l=0,r=0), annotations=[dict(text=f"{csat:.0f}%", x=0.5, y=0.5, font_size=20, showarrow=False)])
+                        fig_pie.update_layout(showlegend=False, height=250, margin=dict(t=0,b=0,l=0,r=0), annotations=[dict(text=f"{csat:.2f}%", x=0.5, y=0.5, font_size=20, showarrow=False)])
                         st.plotly_chart(fig_pie, use_container_width=True)
                     
                     st.subheader("Base de Dados")
