@@ -94,7 +94,8 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
 
 def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
     """
-    Quebra o período em fatias de 20 dias para evitar Timeout da API.
+    Quebra o período em fatias e usa CHAVE COMPOSTA (Protocolo + Agente) 
+    para não apagar dados quando houver mais de uma avaliação no mesmo protocolo.
     """
     url = f"{base_url}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
@@ -148,13 +149,13 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                         if r.status_code != 200:
                             if retry_count < 2: 
                                 retry_count += 1
-                                time.sleep(1) # Espera um pouco e tenta de novo
+                                time.sleep(1) 
                                 continue
                             else:
-                                break # Desiste dessa página
+                                break 
 
                         data = r.json()
-                        if not data: break # Acabaram as páginas deste intervalo
+                        if not data: break 
                         
                         # Processamento
                         for bloco in data:
@@ -162,16 +163,20 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                             nom_pergunta = str(bloco.get("nom_pergunta", "")).lower()
 
                             # --- FILTROS RÍGIDOS ---
-                            # 1. Ignora pergunta de Internet da V3 pelo ID
                             if str(id_pesquisa) == ID_PESQUISA_V3 and cod_pergunta == ID_PERGUNTA_IGNORAR_V3: continue
-                            
-                            # 2. Ignora perguntas técnicas pelo nome (Segurança)
                             if "internet" in nom_pergunta or ("serviço" in nom_pergunta and "atendimento" not in nom_pergunta): continue
 
                             respostas = bloco.get("respostas", [])
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
-                                chave = protocolo if (protocolo and protocolo != "0") else f"noprot_{id_conta}_{id_pesquisa}_{len(dados_unicos)}"
+                                agente = str(resp.get("nom_agente", "DESCONHECIDO"))
+                                
+                                # 🚨 MUDANÇA CRÍTICA: Chave única agora inclui o Agente e a Pergunta
+                                # Isso impede que a segunda avaliação no mesmo protocolo apague a primeira
+                                if protocolo and protocolo != "0":
+                                    chave = f"{protocolo}_{agente}_{cod_pergunta}"
+                                else:
+                                    chave = f"noprot_{id_conta}_{id_pesquisa}_{len(dados_unicos)}"
                                 
                                 if chave not in dados_unicos:
                                     resp['conta_origem_id'] = str(id_conta)
@@ -179,13 +184,13 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                     dados_unicos[chave] = resp
                                     total_baixados += 1
                         
-                        if len(data) < (limit_size / 2): break # Página incompleta = Fim
+                        if len(data) < (limit_size / 2): break 
                         page += 1
-                        if page > 100: break # Limite de segurança por fatia de tempo
+                        if page > 100: break 
 
                     except Exception as e:
                         time.sleep(1)
-                        break # Erro de conexão, pula para próxima tentativa
+                        break 
     
     prog_bar.empty()
     status_text.empty()
@@ -309,8 +314,11 @@ else:
                 st.error("Nenhum dado encontrado após processar todos os períodos.")
             else:
                 df = pd.DataFrame(raw_data)
-                df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce').fillna(0).astype(int)
-                df = df[df['Nota'] > 0]
+                
+                # 🚨 CORREÇÃO DE CÁLCULO: Aceita Nota 0 e converte para Int
+                df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce').fillna(-1) # -1 para erros
+                df = df[df['Nota'] >= 0] # Aceita 0, remove erros
+                df['Nota'] = df['Nota'].astype(int)
                 
                 df['Data'] = pd.to_datetime(df['dat_resposta'])
                 df['Dia'] = df['Data'].dt.strftime('%d/%m')
