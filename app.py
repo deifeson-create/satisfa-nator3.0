@@ -101,12 +101,9 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
     headers = {"Authorization": f"Bearer {token}"}
     servicos_encontrados = set()
     
-    # Se não funcionar, tente o endpoint genérico de serviços se houver
-    
     with st.spinner("Carregando serviços da conta..."):
         try:
             # Consulta o relatório estatístico agrupado por serviço para pegar o que está em uso
-            # NOTA: O parametro 'limit' pode ser tricky. Se 0 não funcionar, tenta 1000.
             params = {
                 "data_inicial": d_ini.strftime("%Y-%m-%d 00:00:00"),
                 "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
@@ -119,7 +116,7 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
             
             if r.status_code == 200:
                 data = r.json()
-                # Tenta lidar com diferentes formatos de resposta (lista direta ou dict com 'rows')
+                # O retorno é uma lista direta ou um dict com 'rows'
                 rows = []
                 if isinstance(data, list):
                     rows = data
@@ -127,21 +124,26 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                     rows = data.get("rows", [])
                 
                 for row in rows:
-                    # Tenta pegar qualquer campo que pareça um nome de serviço
-                    nome = row.get("servico") or row.get("nom_servico") or row.get("nome")
-                    if nome:
+                    # CORREÇÃO: Pegar o campo 'agrupador' que contém o nome do serviço
+                    nome = row.get("agrupador") 
+                    if nome and nome != "ATENDIMENTO AUTOMATICO": # Filtro opcional para remover robô
                         servicos_encontrados.add(str(nome).upper())
         except Exception as e:
-            print(f"Erro ao buscar serviços: {e}")
+            # st.error(f"Erro ao buscar serviços: {e}")
             pass
             
     return sorted(list(servicos_encontrados))
 
 def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
+    """
+    Quebra o período em fatias e usa CHAVE COMPOSTA (Protocolo + Agente) 
+    para não apagar dados quando houver mais de uma avaliação no mesmo protocolo.
+    """
     url = f"{base_url}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
     dados_unicos = {}
     
+    # Prepara os intervalos de datas (Chunks de 20 dias)
     intervalos = []
     current_start = d_ini
     while current_start <= d_fim:
@@ -151,6 +153,7 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
         current_start = current_end + timedelta(days=1)
         if current_start > d_fim: break
 
+    # Barra de Progresso
     status_text = st.empty()
     prog_bar = st.progress(0)
     
@@ -196,6 +199,7 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                         data = r.json()
                         if not data: break 
                         
+                        # Processamento
                         for bloco in data:
                             cod_pergunta = str(bloco.get("cod_pergunta", ""))
                             nom_pergunta = str(bloco.get("nom_pergunta", "")).lower()
@@ -216,6 +220,7 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                 if servico_final == "N/A":
                                     servico_final = resp.get("nom_servico") or resp.get("servico") or "N/A"
 
+                                # --- CORREÇÃO DE CHAVE ÚNICA ---
                                 if protocolo and protocolo != "0":
                                     chave = f"{protocolo}_{agente}_{cod_pergunta}"
                                 else:
@@ -224,7 +229,7 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                 if chave not in dados_unicos:
                                     resp['conta_origem_id'] = str(id_conta)
                                     resp['pergunta_origem'] = bloco.get("nom_pergunta", "")
-                                    resp['nom_servico'] = str(servico_final).upper()
+                                    resp['nom_servico'] = str(servico_final).upper() # Armazena
                                     dados_unicos[chave] = resp
                                     total_baixados += 1
                         
@@ -283,33 +288,6 @@ else:
         uploaded_files = st.file_uploader("CSV/Excel (Matrix)", accept_multiple_files=True, type=['csv', 'xlsx'])
         st.markdown("---")
         limit_page = st.slider("Itens por Requisição", 50, 500, 100, 50)
-        
-        st.divider()
-        # --- DEBUG SECTION ---
-        with st.expander("🛠️ Diagnóstico API"):
-            st.info("Use para testar se a API está retornando serviços corretamente.")
-            debug_conta = st.text_input("ID Conta (Debug)", value="1")
-            if st.button("Testar Busca de Serviços"):
-                url_debug = f"{API_URL_SECRET}/rest/v2/relAtEstatistico"
-                headers_debug = {"Authorization": f"Bearer {st.session_state['token']}"}
-                # Datas de teste (Ontem até Hoje)
-                d_debug = datetime.today()
-                params_debug = {
-                    "data_inicial": (d_debug - timedelta(days=5)).strftime("%Y-%m-%d 00:00:00"),
-                    "data_final": d_debug.strftime("%Y-%m-%d 23:59:59"),
-                    "id_conta": debug_conta,
-                    "agrupador": "servico",
-                    "limit": 10
-                }
-                st.write("**Endpoint:**", url_debug)
-                st.write("**Params:**", params_debug)
-                try:
-                    r_debug = requests.get(url_debug, headers=headers_debug, params=params_debug)
-                    st.write(f"**Status Code:** {r_debug.status_code}")
-                    st.json(r_debug.json())
-                except Exception as e:
-                    st.error(f"Erro na requisição: {e}")
-
         st.divider()
         if st.button("Sair"):
             st.session_state["token"] = None
@@ -336,7 +314,7 @@ else:
                 # 1. Busca Pesquisas
                 st.session_state["pesquisas_list"] = listar_pesquisas(API_URL_SECRET, st.session_state["token"], contas_sel, ini, fim)
                 
-                # 2. Busca Serviços (usando relAtEstatistico conforme doc)
+                # 2. Busca Serviços (usando relAtEstatistico corrigido)
                 st.session_state["servicos_list"] = listar_servicos_api(API_URL_SECRET, st.session_state["token"], contas_sel[0], ini, fim)
                 
                 if not st.session_state["pesquisas_list"]: 
@@ -363,7 +341,7 @@ else:
                 setor_sel = st.selectbox("Filtrar Setor", ["TODOS"] + list(SETORES_AGENTES.keys()) + ["OUTROS"])
             
             with c_servico:
-                # Se a lista da API estiver vazia, permite digitar ou mostra aviso
+                # Agora deve aparecer a lista correta (COMERCIAL, SUPORTE, etc.)
                 opcoes_servico = st.session_state.get("servicos_list", [])
                 servicos_sel = st.multiselect(
                     "Filtrar Serviços (API)", 
@@ -371,7 +349,7 @@ else:
                     placeholder="Selecione serviços específicos (Opcional)"
                 )
                 if not opcoes_servico:
-                    st.caption("⚠️ Nenhum serviço encontrado. Use o diagnóstico na barra lateral.")
+                    st.caption("⚠️ Nenhum serviço encontrado ou busca pendente.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             gerar = st.button("🚀 GERAR (Fatiado & Filtrado)", type="primary", use_container_width=True)
@@ -411,9 +389,9 @@ else:
             else:
                 df = pd.DataFrame(raw_data)
                 
-                # 🚨 CORREÇÃO DE CÁLCULO: Aceita Nota 0 e converte para Int
-                df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce').fillna(-1) # -1 para erros
-                df = df[df['Nota'] >= 0] # Aceita 0, remove erros
+                # 🚨 CORREÇÃO DE CÁLCULO
+                df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce').fillna(-1) 
+                df = df[df['Nota'] >= 0] 
                 df['Nota'] = df['Nota'].astype(int)
                 
                 df['Data'] = pd.to_datetime(df['dat_resposta'])
@@ -441,7 +419,7 @@ else:
                     df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
                 
                 if df_final.empty:
-                    st.warning("Sem dados para este conjunto de filtros (Setor + Serviços).")
+                    st.warning("Sem dados para este conjunto de filtros.")
                 else:
                     total = len(df_final)
                     prom = len(df_final[df_final['Nota'] >= 8])
