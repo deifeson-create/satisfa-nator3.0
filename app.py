@@ -94,18 +94,12 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
     return list({v['id']: v for v in encontradas}.values())
 
 def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
-    """
-    Busca os serviços ativos na conta usando o relatório estatístico.
-    Inclui estratégia de fallback para evitar timeouts em períodos longos.
-    """
     url = f"{base_url}/rest/v2/relAtEstatistico" 
     headers = {"Authorization": f"Bearer {token}"}
     servicos_encontrados = set()
     
     with st.spinner("Carregando serviços da conta..."):
-        
-        # --- ESTRATÉGIA 1: Tenta o período completo ---
-        sucesso_full = False
+        # ESTRATÉGIA 1: Tenta o período completo
         try:
             params = {
                 "data_inicial": d_ini.strftime("%Y-%m-%d 00:00:00"),
@@ -114,30 +108,22 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                 "agrupador": "servico",
                 "limit": 500 
             }
-            # Timeout aumentado para 25s
             r = requests.get(url, headers=headers, params=params, timeout=25)
-            
             if r.status_code == 200:
                 data = r.json()
                 rows = data if isinstance(data, list) else data.get("rows", [])
-                if rows:
-                    sucesso_full = True
-                    for row in rows:
-                        nome = row.get("agrupador") 
-                        if nome and nome != "ATENDIMENTO AUTOMATICO":
-                            servicos_encontrados.add(str(nome).upper())
+                for row in rows:
+                    nome = row.get("agrupador") 
+                    if nome and nome != "ATENDIMENTO AUTOMATICO":
+                        servicos_encontrados.add(str(nome).upper())
         except Exception:
-            pass # Falha silenciosa para ir para o fallback
+            pass 
 
-        # --- ESTRATÉGIA 2: Fallback (Últimos 30 dias) ---
-        # Se a busca completa falhou ou veio vazia, tenta pegar só os últimos 30 dias
-        # Isso evita timeout em relatórios de 1 ano, mas ainda traz os serviços ativos.
+        # ESTRATÉGIA 2: Fallback (Últimos 30 dias)
         if not servicos_encontrados:
             try:
-                # Define janela de 30 dias terminando na data fim selecionada
                 dt_fallback_ini = d_fim - timedelta(days=30)
-                if dt_fallback_ini < d_ini: dt_fallback_ini = d_ini # Respeita o inicio se for menor que 30 dias
-
+                if dt_fallback_ini < d_ini: dt_fallback_ini = d_ini 
                 params_fallback = {
                     "data_inicial": dt_fallback_ini.strftime("%Y-%m-%d 00:00:00"),
                     "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
@@ -145,9 +131,7 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                     "agrupador": "servico",
                     "limit": 500
                 }
-                
                 r = requests.get(url, headers=headers, params=params_fallback, timeout=15)
-                
                 if r.status_code == 200:
                     data = r.json()
                     rows = data if isinstance(data, list) else data.get("rows", [])
@@ -155,24 +139,18 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                         nome = row.get("agrupador") 
                         if nome and nome != "ATENDIMENTO AUTOMATICO":
                             servicos_encontrados.add(str(nome).upper())
-                    
                     if servicos_encontrados:
-                        st.toast("⚠️ Período longo: serviços listados com base nos últimos 30 dias.", icon="ℹ️")
+                        st.toast("⚠️ Serviços carregados (Base: últimos 30 dias)", icon="ℹ️")
             except Exception:
                 pass
 
     return sorted(list(servicos_encontrados))
 
 def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
-    """
-    Quebra o período em fatias e usa CHAVE COMPOSTA (Protocolo + Agente) 
-    para não apagar dados quando houver mais de uma avaliação no mesmo protocolo.
-    """
     url = f"{base_url}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
     dados_unicos = {}
     
-    # Prepara os intervalos de datas (Chunks de 20 dias)
     intervalos = []
     current_start = d_ini
     while current_start <= d_fim:
@@ -182,7 +160,6 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
         current_start = current_end + timedelta(days=1)
         if current_start > d_fim: break
 
-    # Barra de Progresso
     status_text = st.empty()
     prog_bar = st.progress(0)
     
@@ -228,12 +205,10 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                         data = r.json()
                         if not data: break 
                         
-                        # Processamento
                         for bloco in data:
                             cod_pergunta = str(bloco.get("cod_pergunta", ""))
                             nom_pergunta = str(bloco.get("nom_pergunta", "")).lower()
                             
-                            # Tenta pegar serviço de vários lugares possíveis
                             nome_servico = bloco.get("nom_servico") or bloco.get("servico") or "N/A"
 
                             if str(id_pesquisa) == ID_PESQUISA_V3 and cod_pergunta == ID_PERGUNTA_IGNORAR_V3: continue
@@ -244,12 +219,10 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 agente = str(resp.get("nom_agente", "DESCONHECIDO"))
                                 
-                                # Se serviço não veio no bloco pai, tenta na resposta filha
                                 servico_final = nome_servico
                                 if servico_final == "N/A":
                                     servico_final = resp.get("nom_servico") or resp.get("servico") or "N/A"
 
-                                # --- CORREÇÃO DE CHAVE ÚNICA ---
                                 if protocolo and protocolo != "0":
                                     chave = f"{protocolo}_{agente}_{cod_pergunta}"
                                 else:
@@ -258,7 +231,7 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                 if chave not in dados_unicos:
                                     resp['conta_origem_id'] = str(id_conta)
                                     resp['pergunta_origem'] = bloco.get("nom_pergunta", "")
-                                    resp['nom_servico'] = str(servico_final).upper() # Armazena
+                                    resp['nom_servico'] = str(servico_final).upper()
                                     dados_unicos[chave] = resp
                                     total_baixados += 1
                         
@@ -340,45 +313,33 @@ else:
             
         if st.button("🔎 Buscar Pesquisas Disponíveis", use_container_width=True):
             if contas_sel:
-                # 1. Busca Pesquisas
                 st.session_state["pesquisas_list"] = listar_pesquisas(API_URL_SECRET, st.session_state["token"], contas_sel, ini, fim)
-                
-                # 2. Busca Serviços (usando relAtEstatistico corrigido)
                 st.session_state["servicos_list"] = listar_servicos_api(API_URL_SECRET, st.session_state["token"], contas_sel[0], ini, fim)
                 
                 if not st.session_state["pesquisas_list"]: 
                     st.toast("Nenhuma pesquisa encontrada!", icon="⚠️")
                 else: 
                     st.toast(f"Encontradas: {len(st.session_state['pesquisas_list'])} pesquisas e {len(st.session_state['servicos_list'])} serviços.", icon="✅")
-                    
             else: st.toast("Selecione uma conta.", icon="⚠️")
 
     if st.session_state["pesquisas_list"] or uploaded_files:
         with st.container(border=True):
             st.markdown("#### Configuração do Relatório")
             
-            # --- SELEÇÃO DE PESQUISAS ---
             opts = {f"{p['id']} - {p['nome']}": p['id'] for p in st.session_state["pesquisas_list"]}
             defs = [k for k in opts.keys() if any(x in k for x in ["35", "43", "5"])]
             sels = st.multiselect("Pesquisas", list(opts.keys()), default=defs, label_visibility="collapsed")
             p_ids = [opts[s] for s in sels]
             
-            # --- LINHA DE FILTROS (SETOR E SERVIÇO) ---
             c_setor, c_servico = st.columns(2)
             
             with c_setor:
-                setor_sel = st.selectbox("Filtrar Setor", ["TODOS"] + list(SETORES_AGENTES.keys()) + ["OUTROS"])
+                setor_sel = st.selectbox("Filtrar Setor (Inteligente)", ["TODOS"] + list(SETORES_AGENTES.keys()) + ["OUTROS"])
             
             with c_servico:
-                # Agora deve aparecer a lista correta (COMERCIAL, SUPORTE, etc.)
                 opcoes_servico = st.session_state.get("servicos_list", [])
-                servicos_sel = st.multiselect(
-                    "Filtrar Serviços (API)", 
-                    options=opcoes_servico,
-                    placeholder="Selecione serviços específicos (Opcional)"
-                )
-                if not opcoes_servico:
-                    st.caption("⚠️ Nenhum serviço encontrado ou busca pendente.")
+                servicos_sel = st.multiselect("Filtrar Serviços (API)", options=opcoes_servico, placeholder="Selecione serviços específicos (Opcional)")
+                if not opcoes_servico: st.caption("⚠️ Nenhum serviço encontrado ou busca pendente.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             gerar = st.button("🚀 GERAR (Fatiado & Filtrado)", type="primary", use_container_width=True)
@@ -386,20 +347,16 @@ else:
         if gerar:
             raw_data = []
             
-            # 1. API FRACIONADA
             if p_ids:
                 raw_data = baixar_dados_fracionado(API_URL_SECRET, st.session_state["token"], contas_sel, p_ids, ini, fim, limit_page)
             
-            # 2. ARQUIVOS
             if uploaded_files:
                 for u in uploaded_files:
                     try:
                         fname = u.name.lower()
                         if "servico_de_interne" in fname or ("internet" in fname and "experiencia" not in fname): continue
-                        
                         if u.name.endswith('.xlsx'): df_t = pd.read_excel(u)
                         else: df_t = pd.read_csv(u)
-                        
                         df_t.columns = df_t.columns.str.strip()
                         mapa = {'Opção': 'nom_valor', 'Agente': 'nom_agente', 'Data': 'dat_resposta', 
                                 'Protocolo': 'num_protocolo', 'Resposta': 'nom_resposta', 'Conta': 'conta_origem_id',
@@ -407,18 +364,15 @@ else:
                         df_t = df_t.rename(columns=mapa)
                         for col in ['nom_valor', 'nom_agente', 'dat_resposta', 'num_protocolo']:
                             if col not in df_t.columns: df_t[col] = None
-                        
                         df_t['dat_resposta'] = pd.to_datetime(df_t['dat_resposta'], dayfirst=True, errors='coerce')
                         raw_data.extend(df_t.to_dict(orient='records'))
                     except: pass
 
-            # 3. VISUALIZAÇÃO
             if not raw_data:
                 st.error("Nenhum dado encontrado após processar todos os períodos.")
             else:
                 df = pd.DataFrame(raw_data)
                 
-                # 🚨 CORREÇÃO DE CÁLCULO
                 df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce').fillna(-1) 
                 df = df[df['Nota'] >= 0] 
                 df['Nota'] = df['Nota'].astype(int)
@@ -430,21 +384,25 @@ else:
                 df['Nome_Conta'] = df['conta_origem_id'].map(CONTAS_FIXAS).fillna("Outra")
                 df['Link'] = df['num_protocolo'].apply(criar_link_atendimento)
                 
-                # Tratamento da coluna Serviço
-                if 'nom_servico' not in df.columns:
-                    df['Serviço'] = "N/A"
-                else:
-                    df['Serviço'] = df['nom_servico'].astype(str).str.upper().replace('NAN', 'N/A')
+                if 'nom_servico' not in df.columns: df['Serviço'] = "N/A"
+                else: df['Serviço'] = df['nom_servico'].astype(str).str.upper().replace('NAN', 'N/A')
                 
-                # --- FILTRAGEM CUMULATIVA (SETOR + SERVIÇO) ---
+                # --- FILTRAGEM INTELIGENTE (CORREÇÃO) ---
                 df_final = df.copy()
                 
-                # 1. Filtro de Setor
-                if setor_sel != "TODOS": 
-                    df_final = df_final[df_final['Setor'] == setor_sel]
+                if setor_sel != "TODOS":
+                    # 1. Identificar Serviços do Setor (baseado nos Agentes Ativos desse setor nos dados)
+                    # Descobre: "Quais serviços os agentes oficiais deste setor fizeram?"
+                    servicos_do_setor = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
+                    
+                    # 2. Máscara Inteligente:
+                    # Traz quem é do Setor OFICIALMENTE ... OU ... quem fez os SERVIÇOS desse setor
+                    mask_setor = (df_final['Setor'] == setor_sel) | (df_final['Serviço'].isin(servicos_do_setor))
+                    df_final = df_final[mask_setor]
                 
-                # 2. Filtro de Serviço (API)
                 if servicos_sel:
+                    # Se o usuário escolheu serviços manualmente, respeita apenas eles
+                    # Isso garante que se ele escolher um serviço específico, o filtro de setor não atrapalhe
                     df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
                 
                 if df_final.empty:
@@ -490,5 +448,4 @@ else:
                         st.plotly_chart(fig_pie, use_container_width=True)
                     
                     st.subheader("Base de Dados")
-                    # Adicionei a coluna Serviço na tabela final
                     st.dataframe(df_final[['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']], hide_index=True, use_container_width=True, column_config={"Link": st.column_config.LinkColumn("Ver", display_text="Abrir"), "Data": st.column_config.DatetimeColumn(format="D/M/Y H:m")})
