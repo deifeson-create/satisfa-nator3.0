@@ -94,12 +94,18 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
     return list({v['id']: v for v in encontradas}.values())
 
 def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
+    """
+    Busca os serviços ativos na conta usando o relatório estatístico.
+    Inclui estratégia de fallback para evitar timeouts em períodos longos.
+    """
     url = f"{base_url}/rest/v2/relAtEstatistico" 
     headers = {"Authorization": f"Bearer {token}"}
     servicos_encontrados = set()
     
     with st.spinner("Carregando serviços da conta..."):
-        # ESTRATÉGIA 1: Tenta o período completo
+        
+        # --- ESTRATÉGIA 1: Tenta o período completo ---
+        sucesso_full = False
         try:
             params = {
                 "data_inicial": d_ini.strftime("%Y-%m-%d 00:00:00"),
@@ -108,22 +114,28 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                 "agrupador": "servico",
                 "limit": 500 
             }
+            # Timeout aumentado para 25s
             r = requests.get(url, headers=headers, params=params, timeout=25)
+            
             if r.status_code == 200:
                 data = r.json()
                 rows = data if isinstance(data, list) else data.get("rows", [])
-                for row in rows:
-                    nome = row.get("agrupador") 
-                    if nome and nome != "ATENDIMENTO AUTOMATICO":
-                        servicos_encontrados.add(str(nome).upper())
+                if rows:
+                    sucesso_full = True
+                    for row in rows:
+                        nome = row.get("agrupador") 
+                        if nome and nome != "ATENDIMENTO AUTOMATICO":
+                            servicos_encontrados.add(str(nome).upper())
         except Exception:
-            pass 
+            pass # Falha silenciosa para ir para o fallback
 
-        # ESTRATÉGIA 2: Fallback (Últimos 30 dias)
+        # --- ESTRATÉGIA 2: Fallback (Últimos 30 dias) ---
+        # Se a busca completa falhou ou veio vazia, tenta pegar só os últimos 30 dias
         if not servicos_encontrados:
             try:
                 dt_fallback_ini = d_fim - timedelta(days=30)
                 if dt_fallback_ini < d_ini: dt_fallback_ini = d_ini 
+
                 params_fallback = {
                     "data_inicial": dt_fallback_ini.strftime("%Y-%m-%d 00:00:00"),
                     "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
@@ -131,7 +143,9 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                     "agrupador": "servico",
                     "limit": 500
                 }
+                
                 r = requests.get(url, headers=headers, params=params_fallback, timeout=15)
+                
                 if r.status_code == 200:
                     data = r.json()
                     rows = data if isinstance(data, list) else data.get("rows", [])
@@ -139,8 +153,9 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                         nome = row.get("agrupador") 
                         if nome and nome != "ATENDIMENTO AUTOMATICO":
                             servicos_encontrados.add(str(nome).upper())
+                    
                     if servicos_encontrados:
-                        st.toast("⚠️ Serviços carregados (Base: últimos 30 dias)", icon="ℹ️")
+                        st.toast("⚠️ Período longo: serviços listados com base nos últimos 30 dias.", icon="ℹ️")
             except Exception:
                 pass
 
@@ -392,17 +407,15 @@ else:
                 
                 if setor_sel != "TODOS":
                     # 1. Identificar Serviços do Setor (baseado nos Agentes Ativos desse setor nos dados)
-                    # Descobre: "Quais serviços os agentes oficiais deste setor fizeram?"
-                    servicos_do_setor = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
+                    servicos_vinculados = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
                     
                     # 2. Máscara Inteligente:
-                    # Traz quem é do Setor OFICIALMENTE ... OU ... quem fez os SERVIÇOS desse setor
-                    mask_setor = (df_final['Setor'] == setor_sel) | (df_final['Serviço'].isin(servicos_do_setor))
+                    # Inclui quem é do Setor OFICIALMENTE ... OU ... quem fez os SERVIÇOS desse setor
+                    mask_setor = (df_final['Setor'] == setor_sel) | (df_final['Serviço'].isin(servicos_vinculados))
                     df_final = df_final[mask_setor]
                 
                 if servicos_sel:
                     # Se o usuário escolheu serviços manualmente, respeita apenas eles
-                    # Isso garante que se ele escolher um serviço específico, o filtro de setor não atrapalhe
                     df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
                 
                 if df_final.empty:
