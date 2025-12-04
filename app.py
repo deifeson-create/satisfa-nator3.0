@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+# --- 1. CONFIGURAÇÃO DA PÁGINA (DEVE SER O PRIMEIRO COMANDO STREAMLIT) ---
 st.set_page_config(
     layout="wide", 
     page_title="Satisfador 3.0", 
@@ -13,25 +13,41 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. CARREGAMENTO SEGURO DE CREDENCIAIS ---
+# ==============================================================================
+# 🚨 CORREÇÃO CRÍTICA: INICIALIZAÇÃO DE ESTADO (NO TOPO)
+# ==============================================================================
+# Garante que as variáveis existam antes de qualquer verificação
+if "app_access" not in st.session_state:
+    st.session_state["app_access"] = False
+
+if "token" not in st.session_state:
+    st.session_state["token"] = None
+
+if "pesquisas_list" not in st.session_state:
+    st.session_state["pesquisas_list"] = []
+
+# ==============================================================================
+# 🛠️ CARREGAMENTO DE SEGREDOS E CONFIGURAÇÕES
+# ==============================================================================
+
+# Tenta carregar segredos
 try:
     SECRET_SYS_PASS = st.secrets["geral"]["senha_sistema"]
-    API_URL = st.secrets["api"]["url"]
-    API_USER = st.secrets["api"]["user"]
-    API_PASS = st.secrets["api"]["password"]
+    API_URL_SECRET = st.secrets["api"]["url"]
+    API_USER_SECRET = st.secrets["api"]["user"]
+    API_PASS_SECRET = st.secrets["api"]["password"]
 except:
+    # Fallback para ambiente local sem secrets configurado
     SECRET_SYS_PASS = "admin"
-    API_URL = ""
-    API_USER = ""
-    API_PASS = ""
+    API_URL_SECRET = ""
+    API_USER_SECRET = ""
+    API_PASS_SECRET = ""
 
-# ==============================================================================
-# 🛠️ CONFIGURAÇÕES DE NEGÓCIO
-# ==============================================================================
-
+# IDs DAS PESQUISAS
 ID_PESQUISA_V2 = "35"
 ID_PESQUISA_V3 = "43"
 
+# CONTAS
 CONTAS_FIXAS = {
     "1":  "117628-ATEL",
     "15": "ATEL Telecom",
@@ -45,12 +61,15 @@ CONTAS_FIXAS = {
     "3":  "LABORATÓRIO"
 }
 
+# SETORES
 SETORES_AGENTES = {
     'CANCELAMENTO': ['BARBOSA', 'ELOISA', 'LARISSA', 'EDUARDO', 'CAMILA', 'SAMARA'],
     'NEGOCIACAO': ['CARLA', 'LENK', 'ANA LUIZA', 'JULIETTI', 'RODRIGO', 'MONALISA', 'RAMOM', 'EDNAEL', 'LETICIA', 'RITA', 'MARIANA', 'FLAVIA S', 'URI', 'CLARA', 'WANDERSON', 'APARECIDA', 'CRISTINA', 'CAIO', 'LUKAS'],
     'SUPORTE': ['VALERIO', 'TARCISIO', 'GRANJA', 'ALICE', 'FERNANDO', 'SANTOS', 'RENAN', 'FERREIRA', 'HUEMILLY', 'LOPES', 'LAUDEMILSON', 'RAYANE', 'LAYS', 'JORGE', 'LIGIA', 'ALESSANDRO', 'GEIBSON', 'ROBERTO', 'OLIVEIRA', 'MAURÍCIO', 'AVOLO', 'CLEBER', 'ROMERIO', 'JUNIOR', 'ISABELA', 'WAGNER', 'CLAUDIA', 'ANTONIO', 'JOSE', 'LEONARDO', 'KLEBSON', 'OZENAIDE'],
     'NRC': ['RILDYVAN', 'MILENA', 'ALVES', 'MONICKE', 'AYLA', 'MARIANY', 'EDUARDA', 'MENEZES', 'JUCIENNY', 'MARIA', 'ANDREZA', 'LUZILENE', 'IGO', 'AIDA', 'CARIBÉ', 'MICHELLY', 'ADRIA', 'ERICA', 'HENRIQUE', 'SHYRLEI', 'ANNA', 'JULIA', 'FERNANDES']
 }
+
+# --- FUNÇÕES AUXILIARES ---
 
 def normalizar_nome(nome):
     return str(nome).strip().upper() if nome and str(nome) != "nan" else "DESCONHECIDO"
@@ -68,7 +87,7 @@ def criar_link_atendimento(protocolo):
     cod = proto_str[-7:] if len(proto_str) >= 7 else proto_str
     return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
 
-# --- API ---
+# --- FUNÇÕES DE API ---
 
 def autenticar(url, login, senha):
     if not url or not login or not senha:
@@ -111,8 +130,8 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
     dados_unicos = {} 
     audit_perguntas = {"Aceitas": set(), "Ignoradas": set()}
     
-    # LISTA DE PROTOCOLOS VISTOS NA API (Para controle de loop real)
-    protocolos_vistos_api = set()
+    # Controle de loop (protocolos vistos NA API)
+    protocolos_vistos_total = set()
     
     progresso = st.progress(0, text="Iniciando download...")
     total_steps = len(lista_contas) * len(lista_pesquisas)
@@ -138,7 +157,6 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                         "limit": limit_size
                     }
                     
-                    # Timeout aumentado para 60s (Puxar 1 mês pode ser pesado)
                     r = requests.get(url, headers=headers, params=params, timeout=60)
                     if r.status_code != 200: break
                     
@@ -156,18 +174,15 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 
-                                # --- 1. CONTROLE DE LOOP REAL ---
-                                # Verifica se a API mandou algo novo, INDEPENDENTE se vamos usar ou não
+                                # Verifica novidade real (para controle de loop)
                                 if protocolo and protocolo != "0":
-                                    if protocolo not in protocolos_vistos_api:
-                                        protocolos_vistos_api.add(protocolo)
+                                    if protocolo not in protocolos_vistos_total:
+                                        protocolos_vistos_total.add(protocolo)
                                         novos_reais_da_api += 1
                                 else:
-                                    novos_reais_da_api += 1 # Sem protocolo conta como novo
+                                    novos_reais_da_api += 1
                                 
-                                # --- 2. REGRA DE NEGÓCIO (SALVAR OU IGNORAR) ---
-                                
-                                # Filtro V3 (Ignora Internet)
+                                # --- REGRAS DE FILTRO ---
                                 if id_pesquisa_str == ID_PESQUISA_V3:
                                     if "internet" in nome_lower:
                                         audit_perguntas["Ignoradas"].add(f"[V3] {nome_pergunta}")
@@ -175,7 +190,7 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                                 
                                 audit_perguntas["Aceitas"].add(f"[{id_pesquisa}] {nome_pergunta}")
                                 
-                                # Salva nos dados finais
+                                # Salva se for novo no dataset final
                                 if protocolo and protocolo != "0":
                                     if protocolo not in dados_unicos:
                                         resp['conta_origem_id'] = str(id_conta)
@@ -187,23 +202,17 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
                                     resp['pergunta_origem'] = nome_pergunta
                                     dados_unicos[chave] = resp
                     
-                    # --- DECISÃO DE PARADA ---
-                    
-                    # Só para se a API mandou uma página cheia DE DADOS REPETIDOS.
-                    # Se a página veio cheia de "Internet" (ignorados), novos_reais_da_api será > 0, então CONTINUA.
+                    # Trava Anti-Loop
                     if novos_reais_da_api == 0 and len(data) > 0:
                         loop_vazio_count += 1
-                        if loop_vazio_count >= 3: # Tolerância maior
-                            break
+                        if loop_vazio_count >= 3: break
                     else:
                         loop_vazio_count = 0
                     
-                    # Se a API mandou menos itens que o limite, acabou naturalmente
                     if len(data) < (limit_size / 5): 
                         break
                         
                     page += 1
-                    # Aumentei o limite de páginas para 500 (aprox 50.000 atendimentos)
                     if page > 500: break 
                     
                 except Exception as e:
@@ -212,14 +221,8 @@ def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_
     progresso.empty()
     return list(dados_unicos.values()), audit_perguntas
 
-def criar_link_atendimento(protocolo):
-    if not protocolo or str(protocolo) == "0": return None
-    proto_str = str(protocolo).strip()
-    cod = proto_str[-7:] if len(proto_str) >= 7 else proto_str
-    return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
-
 # ==============================================================================
-# TELA 0: BLOQUEIO DE SEGURANÇA
+# TELA 0: BLOQUEIO DE SEGURANÇA (GATEKEEPER)
 # ==============================================================================
 
 if not st.session_state["app_access"]:
@@ -230,6 +233,7 @@ if not st.session_state["app_access"]:
         with st.container(border=True):
             st.markdown("<h3 style='text-align:center'>🔒 Acesso Restrito</h3>", unsafe_allow_html=True)
             
+            # Verifica se a senha existe no secrets
             if not SECRET_SYS_PASS:
                 st.error("ERRO: Senha do sistema não configurada nos Secrets!")
             else:
@@ -241,34 +245,33 @@ if not st.session_state["app_access"]:
                         st.rerun()
                     else:
                         st.error("Senha incorreta.")
-    st.stop()
+    st.stop() # Impede que o resto do código carregue se não estiver logado
 
 # ==============================================================================
-# TELA 1: LOGIN NA API
+# TELA 1: LOGIN NA API (CONEXÃO)
 # ==============================================================================
 
 if not st.session_state["token"]:
     
     col1, col2, col3 = st.columns([1, 2, 1])
-    
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("### ✨ Satisfador 3.0")
             st.caption("Ambiente Seguro Cloud")
             
-            if API_URL: st.info(f"API Configurada: {API_URL}")
+            if API_URL_SECRET: st.info(f"API Configurada: {API_URL_SECRET}")
             else: st.warning("API não configurada nos Secrets!")
             
             if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
                 with st.spinner("Autenticando via Secrets..."):
-                    t = autenticar(API_URL, API_USER, API_PASS)
+                    t = autenticar(API_URL_SECRET, API_USER_SECRET, API_PASS_SECRET)
                     if t:
                         st.session_state["token"] = t
                         st.rerun()
 
 # ==============================================================================
-# TELA 2: DASHBOARD
+# TELA 2: DASHBOARD (PRINCIPAL)
 # ==============================================================================
 
 else:
@@ -298,7 +301,7 @@ else:
             
         if st.button("🔎 1. Mapear Pesquisas Disponíveis", use_container_width=True):
             if contas_sel:
-                res = listar_pesquisas(API_URL, st.session_state["token"], contas_sel, ini, fim)
+                res = listar_pesquisas(API_URL_SECRET, st.session_state["token"], contas_sel, ini, fim)
                 st.session_state["pesquisas_list"] = res
                 if not res: st.toast("Nenhuma pesquisa encontrada!", icon="⚠️")
                 else: st.toast(f"{len(res)} pesquisas encontradas!", icon="✅")
@@ -323,9 +326,8 @@ else:
             if not pesquisas_ids:
                 st.error("Selecione as pesquisas.")
             else:
-                # CHAMA A FUNÇÃO COM A TRAVA DE LOOP CORRIGIDA
                 raw_data, audit_results = baixar_dados_regra_rigida(
-                    API_URL, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
+                    API_URL_SECRET, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
                 )
                 
                 with st.expander("Verificar Regras Aplicadas"):
@@ -360,6 +362,7 @@ else:
                     else:
                         total = len(df_final)
                         prom = len(df_final[df_final['Nota'] >= 8])
+                        det = len(df_final[df_final['Nota'] <= 6])
                         sat_score = (prom / total * 100) if total > 0 else 0
                         media = df_final['Nota'].mean()
                         
@@ -373,7 +376,7 @@ else:
                         
                         st.divider()
                         
-                        st.markdown("#### 📈 Tendência de Satisfação")
+                        st.markdown("#### 📈 Tendência de Satisfação (Dia a Dia)")
                         trend = df_final.groupby('Dia').agg(
                             Total=('Nota', 'count'),
                             Promotores=('Nota', lambda x: (x >= 8).sum())
@@ -407,7 +410,7 @@ else:
                         with col_low:
                             st.markdown("#### ⚠️ Pontos de Atenção (Bottom 3)")
                             if bottom_3.empty:
-                                st.info("Sem dados suficientes (Min. 3 avaliações).")
+                                st.info("Sem dados suficientes para gerar alertas.")
                             else:
                                 for idx, row in bottom_3.iterrows():
                                     st.error(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']} avaliações)")
