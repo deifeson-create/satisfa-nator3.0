@@ -9,14 +9,11 @@ from datetime import datetime, timedelta
 st.set_page_config(
     layout="wide", 
     page_title="Satisfador 3.0", 
-    page_icon="✨",
+    page_icon="🚀",
     initial_sidebar_state="collapsed"
 )
 
-# ==============================================================================
-# 🛠️ CONFIGURAÇÕES E SEGREDOS
-# ==============================================================================
-
+# --- 2. SEGREDOS E CONFIGURAÇÕES ---
 try:
     SECRET_SYS_PASS = st.secrets["geral"]["senha_sistema"]
     API_URL = st.secrets["api"]["url"]
@@ -48,7 +45,7 @@ SETORES_AGENTES = {
     'NRC': ['RILDYVAN', 'MILENA', 'ALVES', 'MONICKE', 'AYLA', 'MARIANY', 'EDUARDA', 'MENEZES', 'JUCIENNY', 'MARIA', 'ANDREZA', 'LUZILENE', 'IGO', 'AIDA', 'CARIBÉ', 'MICHELLY', 'ADRIA', 'ERICA', 'HENRIQUE', 'SHYRLEI', 'ANNA', 'JULIA', 'FERNANDES']
 }
 
-# --- ESTADO E FUNÇÕES AUXILIARES ---
+# --- 3. FUNÇÕES AUXILIARES ---
 
 if "token" not in st.session_state: st.session_state["token"] = None
 if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
@@ -70,9 +67,29 @@ def criar_link_atendimento(protocolo):
     cod = proto_str[-7:] if len(proto_str) >= 7 else proto_str
     return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
 
+# --- LÓGICA DE OURO: PONTUAÇÃO DA PERGUNTA ---
+def calcular_score_pergunta(nome_pergunta):
+    texto = str(nome_pergunta).lower()
+    
+    # 1. LISTA NEGRA (Produto/Internet) -> Score -1 (Descarta)
+    termos_lixo = ['internet', 'banda larga', 'wifi', 'fibra', 'conexão']
+    if any(t in texto for t in termos_lixo):
+        return -1
+        
+    # 2. LISTA DE OURO (Atendimento Humano) -> Score 10 (Prioridade)
+    termos_ouro = ['experiência', 'experiencia', 'atendimento', 'suporte', 'agente', 'avaliar este']
+    if any(t in texto for t in termos_ouro):
+        return 10
+        
+    # 3. NEUTRO (Outras perguntas genéricas) -> Score 1 (Aceita se não tiver melhor)
+    return 1
+
 # --- API ---
 
 def autenticar(url, login, senha):
+    if not url or not login or not senha:
+        st.toast("Credenciais incompletas nos Secrets!", icon="⚠️")
+        return None
     try:
         r = requests.post(f"{url}/rest/v2/authuser", json={"login": login, "chave": senha}, timeout=20)
         if r.status_code == 200 and r.json().get("success"):
@@ -87,13 +104,13 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
     headers = {"Authorization": f"Bearer {token}"}
     encontradas = []
     
-    with st.spinner("Mapeando pesquisas disponíveis..."):
+    with st.spinner("Mapeando pesquisas..."):
         for id_conta in lista_contas:
-            # Scaneia apenas primeiras páginas para ser rápido
+            # Scan rápido (Páginas 1 a 3)
             for page in range(1, 4): 
                 try:
                     params = {"data_inicial": d_ini.strftime("%Y-%m-%d"), "data_final": d_fim.strftime("%Y-%m-%d"), "id_conta": id_conta, "page": page, "limit": 100}
-                    r = requests.get(url, headers=headers, params=params, timeout=10)
+                    r = requests.get(url, headers=headers, params=params, timeout=15)
                     if r.status_code != 200: break
                     rows = r.json().get("rows", [])
                     if not rows: break
@@ -101,22 +118,19 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
                         encontradas.append({"id": str(row.get("cod_pesquisa")), "nome": row.get("nom_pesquisa")})
                     if len(rows) < 100: break
                 except: break
-                
-    # Remove duplicatas (mesma pesquisa em várias páginas)
+    
+    # Remove duplicatas
     return list({v['id']: v for v in encontradas}.values())
 
-def baixar_dados_universal(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
-    """
-    Baixa dados com REGRA UNIVERSAL: Ignora qualquer pergunta com 'Internet'.
-    Isso resolve V2, V3, V4 e futuras pesquisas automaticamente.
-    """
+def baixar_dados_com_score(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
     url = f"{base_url}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
     
-    dados_unicos = {} 
-    audit_perguntas = {"Aceitas": set(), "Ignoradas": set()}
+    # Armazena: { 'protocolo': {'dados': ..., 'score': 10} }
+    dados_finais = {}
+    audit_perguntas = {} # { "Pergunta": Score }
     
-    progresso = st.progress(0, text="Iniciando download...")
+    progresso = st.progress(0, text="Iniciando...")
     total_steps = len(lista_contas) * len(lista_pesquisas)
     step = 0
     
@@ -138,65 +152,62 @@ def baixar_dados_universal(base_url, token, lista_contas, lista_pesquisas, d_ini
                         "limit": limit_size
                     }
                     
-                    r = requests.get(url, headers=headers, params=params, timeout=40)
+                    r = requests.get(url, headers=headers, params=params, timeout=45)
                     if r.status_code != 200: break
                     
                     data = r.json()
                     if not data: break
                     
-                    novos_nesta_pagina = 0
-                    
                     for bloco in data:
                         nome_pergunta = str(bloco.get("nom_pergunta", "")).strip()
-                        nome_lower = nome_pergunta.lower()
                         
-                        # --- REGRA UNIVERSAL ---
-                        # Se a pergunta fala de "Internet" (produto), ignoramos.
-                        # Queremos apenas Atendimento/Experiência.
-                        if "internet" in nome_lower:
-                            audit_perguntas["Ignoradas"].add(f"[{id_pesquisa}] {nome_pergunta}")
-                            continue 
+                        # --- CALCULA O SCORE DA PERGUNTA ---
+                        score = calcular_score_pergunta(nome_pergunta)
                         
-                        # Se passou, é válida (Experiência, Atendimento, Serviço sem Internet, etc)
-                        audit_perguntas["Aceitas"].add(f"[{id_pesquisa}] {nome_pergunta}")
+                        # Guarda para auditoria visual
+                        audit_perguntas[nome_pergunta] = score
+                        
+                        # Se Score for -1 (Internet), ignora e vai para o próximo bloco
+                        if score < 0:
+                            continue
                             
                         respostas = bloco.get("respostas", [])
                         if respostas:
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 
-                                # Deduplicação por Protocolo
+                                # Prepara o objeto
+                                resp['conta_origem_id'] = str(id_conta)
+                                resp['pergunta_origem'] = nome_pergunta
+                                resp['score_interno'] = score
+                                
+                                # LÓGICA DE SUBSTITUIÇÃO (Rei da Colina)
                                 if protocolo and protocolo != "0":
-                                    if protocolo not in dados_unicos:
-                                        resp['conta_origem_id'] = str(id_conta)
-                                        resp['pergunta_origem'] = nome_pergunta
-                                        dados_unicos[protocolo] = resp
-                                        novos_nesta_pagina += 1
+                                    if protocolo in dados_finais:
+                                        # Se já existe, verifica quem tem maior prioridade
+                                        score_antigo = dados_finais[protocolo]['score_interno']
+                                        if score > score_antigo:
+                                            dados_finais[protocolo] = resp # Substitui pelo melhor
+                                    else:
+                                        # Se é novo, entra
+                                        dados_finais[protocolo] = resp
                                 else:
-                                    # Sem protocolo: ID artificial
-                                    chave = f"noprot_{id_conta}_{id_pesquisa}_{len(dados_unicos)}"
-                                    resp['conta_origem_id'] = str(id_conta)
-                                    resp['pergunta_origem'] = nome_pergunta
-                                    dados_unicos[chave] = resp
-                                    novos_nesta_pagina += 1
+                                    # Sem protocolo, entra sempre com ID único
+                                    chave = f"noprot_{id_conta}_{id_pesquisa}_{len(dados_finais)}"
+                                    dados_finais[chave] = resp
                     
-                    # Anti-Loop
-                    if novos_nesta_pagina == 0 and len(data) > 0:
-                        # Se não salvou nada novo mas veio dados, pode ser só uma página de "Internet".
-                        # Vamos dar uma chance e continuar.
-                        pass
-                    
+                    # Controle de paginação
                     if len(data) < (limit_size / 5): 
                         break
                         
                     page += 1
-                    if page > 300: break 
+                    if page > 250: break 
                     
                 except Exception as e:
                     break
             
     progresso.empty()
-    return list(dados_unicos.values()), audit_perguntas
+    return list(dados_finais.values()), audit_perguntas
 
 # ==============================================================================
 # TELA 0: BLOQUEIO
@@ -211,7 +222,7 @@ if not st.session_state["app_access"]:
             if not SECRET_SYS_PASS:
                 st.error("Senha não configurada nos Secrets!")
             else:
-                senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha...")
+                senha = st.text_input("Senha de Acesso", type="password")
                 if st.button("Entrar", type="primary", use_container_width=True):
                     if senha == SECRET_SYS_PASS:
                         st.session_state["app_access"] = True
@@ -231,10 +242,8 @@ if not st.session_state["token"]:
         with st.container(border=True):
             st.markdown("### ✨ Satisfador 3.0")
             st.caption("Ambiente Seguro Cloud")
-            
             if API_URL: st.info(f"API Configurada: {API_URL}")
             else: st.warning("API não configurada nos Secrets!")
-            
             if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
                 with st.spinner("Autenticando..."):
                     t = autenticar(API_URL, API_USER, API_PASS)
@@ -286,7 +295,7 @@ else:
             c_pesq, c_setor, c_btn = st.columns([2, 1, 1])
             with c_pesq:
                 opts = {f"{p['id']} - {p['nome']}": p['id'] for p in st.session_state["pesquisas_list"]}
-                # SELECIONA TODAS POR PADRÃO (A filtragem de "Internet" será automática no código)
+                # Seleciona TODAS por padrão (O filtro interno resolve o resto)
                 sels = st.multiselect("Pesquisas", list(opts.keys()), default=list(opts.keys()), label_visibility="collapsed")
                 pesquisas_ids = [opts[s] for s in sels]
             with c_setor:
@@ -298,15 +307,20 @@ else:
             if not pesquisas_ids:
                 st.error("Selecione as pesquisas.")
             else:
-                # CHAMA A FUNÇÃO COM FILTRO UNIVERSAL
-                raw_data, audit_results = baixar_dados_universal(
+                raw_data, audit_results = baixar_dados_com_score(
                     API_URL, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
                 )
                 
-                with st.expander("Verificar Regras Aplicadas (Debug)"):
-                    c1, c2 = st.columns(2)
-                    c1.success(f"Consideradas:\n" + "\n".join(list(audit_results["Aceitas"])))
-                    c2.error(f"Ignoradas (Internet):\n" + "\n".join(list(audit_results["Ignoradas"])))
+                # Feedback visual da Auditoria de Perguntas
+                with st.expander("🔍 Auditoria de Perguntas (O que entrou?)"):
+                    st.caption("Score 10: Prioridade Máxima (Experiência/Atend.) | Score -1: Ignorado (Internet/Prod.)")
+                    df_audit = pd.DataFrame(list(audit_results.items()), columns=["Pergunta", "Score"])
+                    
+                    def color_score(val):
+                        if val == 10: return 'background-color: #dcfce7; color: #166534' # Verde
+                        if val == -1: return 'background-color: #fee2e2; color: #991b1b' # Vermelho
+                        return ''
+                    st.dataframe(df_audit.style.applymap(color_score, subset=['Score']), use_container_width=True)
 
                 if not raw_data:
                     st.warning("Nenhum dado encontrado.")
@@ -347,41 +361,31 @@ else:
                         
                         st.divider()
                         
-                        # Tendência
                         st.markdown("#### 📈 Tendência")
-                        trend = df_final.groupby('Dia').agg(
-                            Total=('Nota', 'count'),
-                            Promotores=('Nota', lambda x: (x >= 8).sum())
-                        ).reset_index()
+                        trend = df_final.groupby('Dia').agg(Total=('Nota', 'count'), Promotores=('Nota', lambda x: (x >= 8).sum())).reset_index()
                         trend['Sat %'] = (trend['Promotores'] / trend['Total'] * 100).round(1)
                         fig_line = px.line(trend, x='Dia', y='Sat %', markers=True, text='Sat %')
                         fig_line.update_traces(line_color='#2563eb', line_width=3, textposition="top center")
-                        fig_line.update_layout(height=300, yaxis_range=[0, 110])
+                        fig_line.update_layout(height=300, yaxis_range=[0, 110], yaxis_title="Satisfação %", xaxis_title=None)
                         st.plotly_chart(fig_line, use_container_width=True)
 
                         st.divider()
                         
-                        # Destaques
-                        rank_geral = df_final.groupby('Agente').agg(
-                            Qtd=('Nota', 'count'),
-                            Promotores=('Nota', lambda x: (x >= 8).sum()),
-                            Media=('Nota', 'mean')
-                        ).reset_index()
+                        col_top, col_low = st.columns(2)
+                        rank_geral = df_final.groupby('Agente').agg(Qtd=('Nota', 'count'), Promotores=('Nota', lambda x: (x >= 8).sum()), Media=('Nota', 'mean')).reset_index()
                         rank_geral['Sat %'] = (rank_geral['Promotores'] / rank_geral['Qtd'] * 100).round(2)
-                        
-                        c_top, c_low = st.columns(2)
+                        rank_validos = rank_geral[rank_geral['Qtd'] >= 3]
                         top_3 = rank_geral.sort_values(['Sat %', 'Qtd'], ascending=[False, False]).head(3)
-                        bottom_3 = rank_geral[rank_geral['Qtd'] >= 3].sort_values(['Sat %', 'Qtd'], ascending=[True, False]).head(3)
+                        bottom_3 = rank_validos.sort_values(['Sat %', 'Qtd'], ascending=[True, False]).head(3)
 
-                        with c_top:
+                        with col_top:
                             st.markdown("#### 🏆 Top 3")
-                            for _, row in top_3.iterrows():
-                                st.success(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']})")
-                                
-                        with c_low:
+                            for _, row in top_3.iterrows(): st.success(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']})")
+                        with col_low:
                             st.markdown("#### ⚠️ Atenção")
-                            for _, row in bottom_3.iterrows():
-                                st.error(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']})")
+                            if not bottom_3.empty:
+                                for _, row in bottom_3.iterrows(): st.error(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']})")
+                            else: st.info("Sem alertas.")
 
                         st.divider()
 
@@ -390,8 +394,7 @@ else:
                             labels = ['Promotores', 'Outros']
                             colors = ['#10b981', '#ef4444'] 
                             fig = go.Figure(data=[go.Pie(labels=labels, values=[prom, total-prom], hole=.7, marker_colors=colors)])
-                            fig.update_layout(showlegend=False, margin=dict(t=20,b=20,l=20,r=20), height=250,
-                                              annotations=[dict(text=f"{sat_score:.0f}%", x=0.5, y=0.5, font_size=24, showarrow=False)])
+                            fig.update_layout(showlegend=False, margin=dict(t=20,b=20,l=20,r=20), height=250, annotations=[dict(text=f"{sat_score:.1f}%", x=0.5, y=0.5, font_size=24, showarrow=False)])
                             st.plotly_chart(fig, use_container_width=True)
                         with g2:
                             rank_chart = rank_geral.sort_values('Sat %', ascending=True) 
@@ -401,15 +404,8 @@ else:
                             st.plotly_chart(fig_bar, use_container_width=True)
                         
                         st.subheader("📋 Detalhamento")
-                        st.dataframe(
-                            df_final[['dat_resposta', 'Nome_Conta', 'Agente', 'Nota', 'nom_resposta', 'Link_Acesso']],
-                            column_config={
-                                "Link_Acesso": st.column_config.LinkColumn("Ação", display_text="🔗 Abrir", width="small"),
-                                "Nota": st.column_config.NumberColumn("Nota", format="%d ⭐", width="small"),
-                                "dat_resposta": "Data/Hora",
-                                "nom_resposta": "Comentário"
-                            },
-                            use_container_width=True, hide_index=True
-                        )
+                        st.dataframe(df_final[['dat_resposta', 'Nome_Conta', 'Agente', 'Nota', 'nom_resposta', 'Link_Acesso']], column_config={"Link_Acesso": st.column_config.LinkColumn("Ação", display_text="🔗 Abrir", width="small"), "Nota": st.column_config.NumberColumn("Nota", format="%d ⭐", width="small"), "dat_resposta": "Data/Hora", "nom_resposta": "Comentário"}, use_container_width=True, hide_index=True)
                         csv = df_final.to_csv(index=False).encode('utf-8')
                         st.download_button("📥 Baixar CSV", csv, "relatorio.csv", "text/csv", use_container_width=True)
+else:
+    st.info("👈 Conecte-se na barra lateral.")
