@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide", 
     page_title="Satisfador 3.0 Pro", 
     page_icon="🛡️",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # --- ESTADO ---
@@ -93,7 +93,6 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
             except: pass
     return list({v['id']: v for v in encontradas}.values())
 
-# --- NOVA FUNÇÃO: BUSCAR SERVIÇOS (Baseada na doc: relAtEstatistico) ---
 def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
     """
     Busca os serviços ativos na conta usando o relatório estatístico agrupado por serviço.
@@ -102,46 +101,47 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
     headers = {"Authorization": f"Bearer {token}"}
     servicos_encontrados = set()
     
+    # Se não funcionar, tente o endpoint genérico de serviços se houver
+    
     with st.spinner("Carregando serviços da conta..."):
         try:
             # Consulta o relatório estatístico agrupado por serviço para pegar o que está em uso
+            # NOTA: O parametro 'limit' pode ser tricky. Se 0 não funcionar, tenta 1000.
             params = {
                 "data_inicial": d_ini.strftime("%Y-%m-%d 00:00:00"),
                 "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
                 "id_conta": id_conta,
                 "agrupador": "servico",
-                "limit": 0 # Tenta trazer tudo
+                "limit": 300 
             }
             
             r = requests.get(url, headers=headers, params=params, timeout=15)
             
             if r.status_code == 200:
                 data = r.json()
-                # A API pode retornar lista direta ou dict com chave rows
-                rows = data if isinstance(data, list) else data.get("rows", [])
+                # Tenta lidar com diferentes formatos de resposta (lista direta ou dict com 'rows')
+                rows = []
+                if isinstance(data, list):
+                    rows = data
+                elif isinstance(data, dict):
+                    rows = data.get("rows", [])
                 
                 for row in rows:
-                    # O campo do agrupador geralmente vem com o nome do agrupador (servico)
-                    nome = row.get("servico") or row.get("nom_servico")
+                    # Tenta pegar qualquer campo que pareça um nome de serviço
+                    nome = row.get("servico") or row.get("nom_servico") or row.get("nome")
                     if nome:
                         servicos_encontrados.add(str(nome).upper())
         except Exception as e:
-            # Falha silenciosa para não travar o app, o usuário pode digitar manualmente se precisar
             print(f"Erro ao buscar serviços: {e}")
             pass
             
     return sorted(list(servicos_encontrados))
 
 def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
-    """
-    Quebra o período em fatias e usa CHAVE COMPOSTA (Protocolo + Agente) 
-    para não apagar dados quando houver mais de uma avaliação no mesmo protocolo.
-    """
     url = f"{base_url}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
     dados_unicos = {}
     
-    # Prepara os intervalos de datas (Chunks de 20 dias)
     intervalos = []
     current_start = d_ini
     while current_start <= d_fim:
@@ -151,7 +151,6 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
         current_start = current_end + timedelta(days=1)
         if current_start > d_fim: break
 
-    # Barra de Progresso
     status_text = st.empty()
     prog_bar = st.progress(0)
     
@@ -197,16 +196,13 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                         data = r.json()
                         if not data: break 
                         
-                        # Processamento
                         for bloco in data:
                             cod_pergunta = str(bloco.get("cod_pergunta", ""))
                             nom_pergunta = str(bloco.get("nom_pergunta", "")).lower()
                             
-                            # --- CAPTURA DE SERVIÇO (NOVO) ---
-                            # Tenta pegar o serviço do bloco principal ou tenta achar nos campos internos
+                            # Tenta pegar serviço de vários lugares possíveis
                             nome_servico = bloco.get("nom_servico") or bloco.get("servico") or "N/A"
 
-                            # --- FILTROS RÍGIDOS ---
                             if str(id_pesquisa) == ID_PESQUISA_V3 and cod_pergunta == ID_PERGUNTA_IGNORAR_V3: continue
                             if "internet" in nom_pergunta or ("serviço" in nom_pergunta and "atendimento" not in nom_pergunta): continue
 
@@ -215,8 +211,11 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 agente = str(resp.get("nom_agente", "DESCONHECIDO"))
                                 
-                                # 🚨 MUDANÇA CRÍTICA: Chave única agora inclui o Agente e a Pergunta
-                                # Isso impede que a segunda avaliação no mesmo protocolo apague a primeira
+                                # Se serviço não veio no bloco pai, tenta na resposta filha
+                                servico_final = nome_servico
+                                if servico_final == "N/A":
+                                    servico_final = resp.get("nom_servico") or resp.get("servico") or "N/A"
+
                                 if protocolo and protocolo != "0":
                                     chave = f"{protocolo}_{agente}_{cod_pergunta}"
                                 else:
@@ -225,7 +224,7 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                                 if chave not in dados_unicos:
                                     resp['conta_origem_id'] = str(id_conta)
                                     resp['pergunta_origem'] = bloco.get("nom_pergunta", "")
-                                    resp['nom_servico'] = str(nome_servico).upper() # Armazena o serviço na linha
+                                    resp['nom_servico'] = str(servico_final).upper()
                                     dados_unicos[chave] = resp
                                     total_baixados += 1
                         
@@ -284,6 +283,33 @@ else:
         uploaded_files = st.file_uploader("CSV/Excel (Matrix)", accept_multiple_files=True, type=['csv', 'xlsx'])
         st.markdown("---")
         limit_page = st.slider("Itens por Requisição", 50, 500, 100, 50)
+        
+        st.divider()
+        # --- DEBUG SECTION ---
+        with st.expander("🛠️ Diagnóstico API"):
+            st.info("Use para testar se a API está retornando serviços corretamente.")
+            debug_conta = st.text_input("ID Conta (Debug)", value="1")
+            if st.button("Testar Busca de Serviços"):
+                url_debug = f"{API_URL_SECRET}/rest/v2/relAtEstatistico"
+                headers_debug = {"Authorization": f"Bearer {st.session_state['token']}"}
+                # Datas de teste (Ontem até Hoje)
+                d_debug = datetime.today()
+                params_debug = {
+                    "data_inicial": (d_debug - timedelta(days=5)).strftime("%Y-%m-%d 00:00:00"),
+                    "data_final": d_debug.strftime("%Y-%m-%d 23:59:59"),
+                    "id_conta": debug_conta,
+                    "agrupador": "servico",
+                    "limit": 10
+                }
+                st.write("**Endpoint:**", url_debug)
+                st.write("**Params:**", params_debug)
+                try:
+                    r_debug = requests.get(url_debug, headers=headers_debug, params=params_debug)
+                    st.write(f"**Status Code:** {r_debug.status_code}")
+                    st.json(r_debug.json())
+                except Exception as e:
+                    st.error(f"Erro na requisição: {e}")
+
         st.divider()
         if st.button("Sair"):
             st.session_state["token"] = None
@@ -345,7 +371,7 @@ else:
                     placeholder="Selecione serviços específicos (Opcional)"
                 )
                 if not opcoes_servico:
-                    st.caption("⚠️ Nenhum serviço encontrado ou busca pendente.")
+                    st.caption("⚠️ Nenhum serviço encontrado. Use o diagnóstico na barra lateral.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             gerar = st.button("🚀 GERAR (Fatiado & Filtrado)", type="primary", use_container_width=True)
@@ -370,7 +396,7 @@ else:
                         df_t.columns = df_t.columns.str.strip()
                         mapa = {'Opção': 'nom_valor', 'Agente': 'nom_agente', 'Data': 'dat_resposta', 
                                 'Protocolo': 'num_protocolo', 'Resposta': 'nom_resposta', 'Conta': 'conta_origem_id',
-                                'Serviço': 'nom_servico'} # Adicionado mapeamento de serviço para arquivos também
+                                'Serviço': 'nom_servico'} 
                         df_t = df_t.rename(columns=mapa)
                         for col in ['nom_valor', 'nom_agente', 'dat_resposta', 'num_protocolo']:
                             if col not in df_t.columns: df_t[col] = None
@@ -397,7 +423,7 @@ else:
                 df['Nome_Conta'] = df['conta_origem_id'].map(CONTAS_FIXAS).fillna("Outra")
                 df['Link'] = df['num_protocolo'].apply(criar_link_atendimento)
                 
-                # Tratamento da coluna Serviço (Garante string maiúscula)
+                # Tratamento da coluna Serviço
                 if 'nom_servico' not in df.columns:
                     df['Serviço'] = "N/A"
                 else:
@@ -410,9 +436,8 @@ else:
                 if setor_sel != "TODOS": 
                     df_final = df_final[df_final['Setor'] == setor_sel]
                 
-                # 2. Filtro de Serviço (API) - Aplica sobre o resultado do setor (ou total)
+                # 2. Filtro de Serviço (API)
                 if servicos_sel:
-                    # Mantém apenas os serviços selecionados na lista da API
                     df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
                 
                 if df_final.empty:
