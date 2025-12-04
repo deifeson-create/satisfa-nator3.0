@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 st.set_page_config(
     layout="wide", 
     page_title="Satisfador 3.0", 
-    page_icon="🎯",
+    page_icon="🛡️",
     initial_sidebar_state="collapsed"
 )
 
@@ -51,12 +51,6 @@ SETORES_AGENTES = {
     'SUPORTE': ['VALERIO', 'TARCISIO', 'GRANJA', 'ALICE', 'FERNANDO', 'SANTOS', 'RENAN', 'FERREIRA', 'HUEMILLY', 'LOPES', 'LAUDEMILSON', 'RAYANE', 'LAYS', 'JORGE', 'LIGIA', 'ALESSANDRO', 'GEIBSON', 'ROBERTO', 'OLIVEIRA', 'MAURÍCIO', 'AVOLO', 'CLEBER', 'ROMERIO', 'JUNIOR', 'ISABELA', 'WAGNER', 'CLAUDIA', 'ANTONIO', 'JOSE', 'LEONARDO', 'KLEBSON', 'OZENAIDE'],
     'NRC': ['RILDYVAN', 'MILENA', 'ALVES', 'MONICKE', 'AYLA', 'MARIANY', 'EDUARDA', 'MENEZES', 'JUCIENNY', 'MARIA', 'ANDREZA', 'LUZILENE', 'IGO', 'AIDA', 'CARIBÉ', 'MICHELLY', 'ADRIA', 'ERICA', 'HENRIQUE', 'SHYRLEI', 'ANNA', 'JULIA', 'FERNANDES']
 }
-
-# --- 3. FUNÇÕES AUXILIARES ---
-
-if "token" not in st.session_state: st.session_state["token"] = None
-if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
-if "app_access" not in st.session_state: st.session_state["app_access"] = False
 
 def normalizar_nome(nome):
     return str(nome).strip().upper() if nome and str(nome) != "nan" else "DESCONHECIDO"
@@ -110,15 +104,15 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
                 
     return list({v['id']: v for v in encontradas}.values())
 
-def baixar_dados_corrigido_v3(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
+def baixar_dados_regra_rigida(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
     url = f"{base_url}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
     
-    dados_salvos = {} # O que vai para o relatório (Chave: Protocolo)
+    dados_unicos = {} 
     audit_perguntas = {"Aceitas": set(), "Ignoradas": set()}
     
-    # LISTA DE CONTROLE DE LOOP (Protocolos que a API já mandou, independente se salvamos ou não)
-    protocolos_vistos_total = set()
+    # LISTA DE PROTOCOLOS VISTOS NA API (Para controle de loop real)
+    protocolos_vistos_api = set()
     
     progresso = st.progress(0, text="Iniciando download...")
     total_steps = len(lista_contas) * len(lista_pesquisas)
@@ -129,9 +123,7 @@ def baixar_dados_corrigido_v3(base_url, token, lista_contas, lista_pesquisas, d_
             step += 1
             page = 1
             id_pesquisa_str = str(id_pesquisa)
-            
-            # Reset do contador de loop por pesquisa
-            loop_vazio_count = 0 
+            loop_vazio_count = 0
             
             while True:
                 progresso.progress(step / max(total_steps, 1), text=f"Baixando Conta {id_conta} | Pesquisa {id_pesquisa} | Pág {page}")
@@ -146,14 +138,14 @@ def baixar_dados_corrigido_v3(base_url, token, lista_contas, lista_pesquisas, d_
                         "limit": limit_size
                     }
                     
-                    r = requests.get(url, headers=headers, params=params, timeout=40)
+                    # Timeout aumentado para 60s (Puxar 1 mês pode ser pesado)
+                    r = requests.get(url, headers=headers, params=params, timeout=60)
                     if r.status_code != 200: break
                     
                     data = r.json()
-                    if not data: break # Lista vazia = Fim real da API
+                    if not data: break
                     
-                    # Contador de novidades REAIS da API (para saber se travou)
-                    novos_nesta_pagina_api = 0
+                    novos_reais_da_api = 0
                     
                     for bloco in data:
                         nome_pergunta = str(bloco.get("nom_pergunta", "")).strip()
@@ -164,20 +156,18 @@ def baixar_dados_corrigido_v3(base_url, token, lista_contas, lista_pesquisas, d_
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 
-                                # --- LÓGICA 1: CONTROLE DE LOOP ---
-                                # Verifica se esse protocolo é novidade vindo da API
+                                # --- 1. CONTROLE DE LOOP REAL ---
+                                # Verifica se a API mandou algo novo, INDEPENDENTE se vamos usar ou não
                                 if protocolo and protocolo != "0":
-                                    if protocolo not in protocolos_vistos_total:
-                                        protocolos_vistos_total.add(protocolo)
-                                        novos_nesta_pagina_api += 1
+                                    if protocolo not in protocolos_vistos_api:
+                                        protocolos_vistos_api.add(protocolo)
+                                        novos_reais_da_api += 1
                                 else:
-                                    # Sem protocolo conta como novo para não travar
-                                    novos_nesta_pagina_api += 1
+                                    novos_reais_da_api += 1 # Sem protocolo conta como novo
                                 
-                                # --- LÓGICA 2: FILTRO DE NEGÓCIO (SALVAR OU NÃO) ---
-                                # Aqui aplicamos a regra da V3 vs V2
+                                # --- 2. REGRA DE NEGÓCIO (SALVAR OU IGNORAR) ---
                                 
-                                # Se for V3 e falar de Internet, IGNORE (mas já contou como visto acima)
+                                # Filtro V3 (Ignora Internet)
                                 if id_pesquisa_str == ID_PESQUISA_V3:
                                     if "internet" in nome_lower:
                                         audit_perguntas["Ignoradas"].add(f"[V3] {nome_pergunta}")
@@ -185,56 +175,66 @@ def baixar_dados_corrigido_v3(base_url, token, lista_contas, lista_pesquisas, d_
                                 
                                 audit_perguntas["Aceitas"].add(f"[{id_pesquisa}] {nome_pergunta}")
                                 
-                                # Se chegou aqui, o dado é bom. Salva se não tiver salvo ainda.
+                                # Salva nos dados finais
                                 if protocolo and protocolo != "0":
-                                    if protocolo not in dados_salvos:
+                                    if protocolo not in dados_unicos:
                                         resp['conta_origem_id'] = str(id_conta)
                                         resp['pergunta_origem'] = nome_pergunta
-                                        dados_salvos[protocolo] = resp
+                                        dados_unicos[protocolo] = resp
                                 else:
-                                    chave = f"noprot_{id_conta}_{id_pesquisa}_{len(dados_salvos)}"
+                                    chave = f"noprot_{id_conta}_{id_pesquisa}_{len(dados_unicos)}"
                                     resp['conta_origem_id'] = str(id_conta)
                                     resp['pergunta_origem'] = nome_pergunta
-                                    dados_salvos[chave] = resp
-
+                                    dados_unicos[chave] = resp
+                    
                     # --- DECISÃO DE PARADA ---
                     
-                    # Se a API mandou dados, mas NENHUM protocolo era novo (tudo repetido), é Loop.
-                    if novos_nesta_pagina_api == 0 and len(data) > 0:
+                    # Só para se a API mandou uma página cheia DE DADOS REPETIDOS.
+                    # Se a página veio cheia de "Internet" (ignorados), novos_reais_da_api será > 0, então CONTINUA.
+                    if novos_reais_da_api == 0 and len(data) > 0:
                         loop_vazio_count += 1
-                        # Tolerância de 3 páginas repetidas antes de desistir
-                        if loop_vazio_count >= 3:
+                        if loop_vazio_count >= 3: # Tolerância maior
                             break
                     else:
-                        loop_vazio_count = 0 # Reseta se achou algo novo
+                        loop_vazio_count = 0
                     
-                    # Fim natural da paginação (menos dados que o limite)
+                    # Se a API mandou menos itens que o limite, acabou naturalmente
                     if len(data) < (limit_size / 5): 
                         break
                         
                     page += 1
-                    if page > 250: break # Limite de segurança absoluta
+                    # Aumentei o limite de páginas para 500 (aprox 50.000 atendimentos)
+                    if page > 500: break 
                     
                 except Exception as e:
                     break
             
     progresso.empty()
-    return list(dados_salvos.values()), audit_perguntas
+    return list(dados_unicos.values()), audit_perguntas
+
+def criar_link_atendimento(protocolo):
+    if not protocolo or str(protocolo) == "0": return None
+    proto_str = str(protocolo).strip()
+    cod = proto_str[-7:] if len(proto_str) >= 7 else proto_str
+    return f"https://ateltelecom.matrixdobrasil.ai/atendimento/view/cod_atendimento/{cod}/readonly/true#atendimento-div"
 
 # ==============================================================================
-# TELA 0: BLOQUEIO
+# TELA 0: BLOQUEIO DE SEGURANÇA
 # ==============================================================================
 
 if not st.session_state["app_access"]:
+    
     c1, c2, c3 = st.columns([1, 1, 1])
     with c2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("<h3 style='text-align:center'>🔒 Acesso Restrito</h3>", unsafe_allow_html=True)
+            
             if not SECRET_SYS_PASS:
                 st.error("ERRO: Senha do sistema não configurada nos Secrets!")
             else:
-                senha = st.text_input("Senha de Acesso", type="password")
+                senha = st.text_input("Senha de Acesso", type="password", placeholder="Digite a senha do sistema")
+                
                 if st.button("Entrar", type="primary", use_container_width=True):
                     if senha == SECRET_SYS_PASS:
                         st.session_state["app_access"] = True
@@ -244,18 +244,22 @@ if not st.session_state["app_access"]:
     st.stop()
 
 # ==============================================================================
-# TELA 1: CONEXÃO
+# TELA 1: LOGIN NA API
 # ==============================================================================
 
 if not st.session_state["token"]:
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("### ✨ Satisfador 3.0")
             st.caption("Ambiente Seguro Cloud")
+            
             if API_URL: st.info(f"API Configurada: {API_URL}")
             else: st.warning("API não configurada nos Secrets!")
+            
             if st.button("CONECTAR SISTEMA", type="primary", use_container_width=True):
                 with st.spinner("Autenticando via Secrets..."):
                     t = autenticar(API_URL, API_USER, API_PASS)
@@ -319,7 +323,8 @@ else:
             if not pesquisas_ids:
                 st.error("Selecione as pesquisas.")
             else:
-                raw_data, audit_results = baixar_dados_corrigido_v3(
+                # CHAMA A FUNÇÃO COM A TRAVA DE LOOP CORRIGIDA
+                raw_data, audit_results = baixar_dados_regra_rigida(
                     API_URL, st.session_state["token"], contas_sel, pesquisas_ids, ini, fim, limit_page
                 )
                 
@@ -339,6 +344,7 @@ else:
                     df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce')
                     df = df.dropna(subset=['Nota']) 
                     df['Nota'] = df['Nota'].astype(int)
+                    
                     df['Data'] = pd.to_datetime(df['dat_resposta'])
                     df['Dia'] = df['Data'].dt.strftime('%d/%m')
                     
@@ -357,7 +363,7 @@ else:
                         sat_score = (prom / total * 100) if total > 0 else 0
                         media = df_final['Nota'].mean()
                         
-                        st.markdown("### Resultados")
+                        st.markdown("### Resultados Gerais")
                         
                         k1, k2, k3, k4 = st.columns(4)
                         k1.metric("Total Avaliações", total)
@@ -367,7 +373,7 @@ else:
                         
                         st.divider()
                         
-                        st.markdown("#### 📈 Tendência de Satisfação (Dia a Dia)")
+                        st.markdown("#### 📈 Tendência de Satisfação")
                         trend = df_final.groupby('Dia').agg(
                             Total=('Nota', 'count'),
                             Promotores=('Nota', lambda x: (x >= 8).sum())
@@ -401,7 +407,7 @@ else:
                         with col_low:
                             st.markdown("#### ⚠️ Pontos de Atenção (Bottom 3)")
                             if bottom_3.empty:
-                                st.info("Sem dados suficientes para gerar alertas.")
+                                st.info("Sem dados suficientes (Min. 3 avaliações).")
                             else:
                                 for idx, row in bottom_3.iterrows():
                                     st.error(f"**{row['Agente']}**: {row['Sat %']}% ({row['Qtd']} avaliações)")
@@ -420,7 +426,7 @@ else:
                             rank_chart = rank_geral.sort_values('Sat %', ascending=True) 
                             fig_bar = px.bar(rank_chart, x='Sat %', y='Agente', orientation='h', text='Sat %', title="Ranking por Agente", color='Sat %', color_continuous_scale=['#ef4444', '#f59e0b', '#10b981'])
                             fig_bar.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                            fig_bar.update_layout(xaxis_title="", yaxis_title="", height=300, coloraxis_showscale=False)
+                            fig_bar.update_layout(xaxis_title="", yaxis_title="", height=350, coloraxis_showscale=False)
                             st.plotly_chart(fig_bar, use_container_width=True)
                         
                         st.subheader("📋 Detalhamento")
