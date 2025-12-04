@@ -95,43 +95,72 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
 
 def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
     """
-    Busca os serviços ativos na conta usando o relatório estatístico agrupado por serviço.
+    Busca os serviços ativos na conta usando o relatório estatístico.
+    Inclui estratégia de fallback para evitar timeouts em períodos longos.
     """
     url = f"{base_url}/rest/v2/relAtEstatistico" 
     headers = {"Authorization": f"Bearer {token}"}
     servicos_encontrados = set()
     
     with st.spinner("Carregando serviços da conta..."):
+        
+        # --- ESTRATÉGIA 1: Tenta o período completo ---
+        sucesso_full = False
         try:
-            # Consulta o relatório estatístico agrupado por serviço para pegar o que está em uso
             params = {
                 "data_inicial": d_ini.strftime("%Y-%m-%d 00:00:00"),
                 "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
                 "id_conta": id_conta,
                 "agrupador": "servico",
-                "limit": 300 
+                "limit": 500 
             }
-            
-            r = requests.get(url, headers=headers, params=params, timeout=15)
+            # Timeout aumentado para 25s
+            r = requests.get(url, headers=headers, params=params, timeout=25)
             
             if r.status_code == 200:
                 data = r.json()
-                # O retorno é uma lista direta ou um dict com 'rows'
-                rows = []
-                if isinstance(data, list):
-                    rows = data
-                elif isinstance(data, dict):
-                    rows = data.get("rows", [])
+                rows = data if isinstance(data, list) else data.get("rows", [])
+                if rows:
+                    sucesso_full = True
+                    for row in rows:
+                        nome = row.get("agrupador") 
+                        if nome and nome != "ATENDIMENTO AUTOMATICO":
+                            servicos_encontrados.add(str(nome).upper())
+        except Exception:
+            pass # Falha silenciosa para ir para o fallback
+
+        # --- ESTRATÉGIA 2: Fallback (Últimos 30 dias) ---
+        # Se a busca completa falhou ou veio vazia, tenta pegar só os últimos 30 dias
+        # Isso evita timeout em relatórios de 1 ano, mas ainda traz os serviços ativos.
+        if not servicos_encontrados:
+            try:
+                # Define janela de 30 dias terminando na data fim selecionada
+                dt_fallback_ini = d_fim - timedelta(days=30)
+                if dt_fallback_ini < d_ini: dt_fallback_ini = d_ini # Respeita o inicio se for menor que 30 dias
+
+                params_fallback = {
+                    "data_inicial": dt_fallback_ini.strftime("%Y-%m-%d 00:00:00"),
+                    "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
+                    "id_conta": id_conta,
+                    "agrupador": "servico",
+                    "limit": 500
+                }
                 
-                for row in rows:
-                    # CORREÇÃO: Pegar o campo 'agrupador' que contém o nome do serviço
-                    nome = row.get("agrupador") 
-                    if nome and nome != "ATENDIMENTO AUTOMATICO": # Filtro opcional para remover robô
-                        servicos_encontrados.add(str(nome).upper())
-        except Exception as e:
-            # st.error(f"Erro ao buscar serviços: {e}")
-            pass
-            
+                r = requests.get(url, headers=headers, params=params_fallback, timeout=15)
+                
+                if r.status_code == 200:
+                    data = r.json()
+                    rows = data if isinstance(data, list) else data.get("rows", [])
+                    for row in rows:
+                        nome = row.get("agrupador") 
+                        if nome and nome != "ATENDIMENTO AUTOMATICO":
+                            servicos_encontrados.add(str(nome).upper())
+                    
+                    if servicos_encontrados:
+                        st.toast("⚠️ Período longo: serviços listados com base nos últimos 30 dias.", icon="ℹ️")
+            except Exception:
+                pass
+
     return sorted(list(servicos_encontrados))
 
 def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_ini, d_fim, limit_size):
