@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import time
+import io # Importante para criar o arquivo na memória
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -262,6 +263,59 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
     status_text.empty()
     return list(dados_unicos.values())
 
+# --- FUNÇÃO NOVA: GERAR EXCEL ---
+def gerar_excel(df_resumo, df_brutos):
+    """
+    Gera um arquivo Excel com duas abas:
+    1. Resumo (Com gráfico nativo do Excel)
+    2. Dados Brutos
+    """
+    output = io.BytesIO()
+    
+    # Usando xlsxwriter como engine para poder criar gráficos
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        
+        # --- ABA 1: RESUMO ---
+        df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Resumo']
+        
+        # Criar Gráfico de Colunas no Excel
+        chart = workbook.add_chart({'type': 'column'})
+        
+        # Configurar série de dados para o gráfico
+        # Assume que: Col A = Agente, Col B = CSAT
+        # (rows=len(df)+1 para conta cabeçalho)
+        max_row = len(df_resumo) + 1
+        
+        chart.add_series({
+            'name':       'Satisfação (CSAT %)',
+            'categories': ['Resumo', 1, 0, max_row - 1, 0], # Coluna A (Agentes)
+            'values':     ['Resumo', 1, 1, max_row - 1, 1], # Coluna B (CSAT)
+            'gap':        20,
+        })
+        
+        chart.set_title({'name': 'Ranking de Satisfação por Agente'})
+        chart.set_y_axis({'name': 'CSAT (%)', 'max': 100})
+        chart.set_x_axis({'name': 'Agente'})
+        
+        # Inserir o gráfico na planilha
+        worksheet.insert_chart('E2', chart)
+        
+        # --- ABA 2: DADOS BRUTOS ---
+        # Selecionar colunas úteis para exportação
+        cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
+        df_brutos_clean = df_brutos[cols_export].copy()
+        
+        # Remover timezone para evitar erro no Excel
+        if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
+             df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
+
+        df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
+        
+    return output.getvalue()
+
 # ==============================================================================
 # INTERFACE
 # ==============================================================================
@@ -402,7 +456,7 @@ else:
                 if 'nom_servico' not in df.columns: df['Serviço'] = "N/A"
                 else: df['Serviço'] = df['nom_servico'].astype(str).str.upper().replace('NAN', 'N/A')
                 
-                # --- FILTRAGEM INTELIGENTE (CORREÇÃO) ---
+                # --- FILTRAGEM INTELIGENTE ---
                 df_final = df.copy()
                 
                 if setor_sel != "TODOS":
@@ -421,7 +475,6 @@ else:
                     csat = (prom / total * 100)
                     media = df_final['Nota'].mean()
 
-                    # AJUSTADO PARA 2 CASAS DECIMAIS
                     st.markdown("### Resultados")
                     k1, k2, k3, k4 = st.columns(4)
                     k1.metric("Total", total)
@@ -431,7 +484,6 @@ else:
                     
                     st.divider()
                     
-                    # AJUSTADO PARA 2 CASAS DECIMAIS
                     trend = df_final.groupby('Dia').agg(Total=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum())).reset_index()
                     trend['Sat'] = (trend['Prom']/trend['Total']*100).round(2)
                     fig = px.line(trend, x='Dia', y='Sat', markers=True, title="Evolução", text='Sat')
@@ -441,7 +493,6 @@ else:
                     
                     st.divider()
                     
-                    # AJUSTADO PARA 2 CASAS DECIMAIS
                     col_rank, col_pie = st.columns([2, 1])
                     rank = df_final.groupby('Agente').agg(Qtd=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum()), Media=('Nota', 'mean')).reset_index()
                     rank['CSAT'] = (rank['Prom']/rank['Qtd']*100).round(2)
@@ -460,3 +511,15 @@ else:
                     
                     st.subheader("Base de Dados")
                     st.dataframe(df_final[['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']], hide_index=True, use_container_width=True, column_config={"Link": st.column_config.LinkColumn("Ver", display_text="Abrir"), "Data": st.column_config.DatetimeColumn(format="D/M/Y H:m")})
+                    
+                    # --- BOTÃO DE EXPORTAÇÃO ---
+                    st.divider()
+                    excel_data = gerar_excel(rank[['Agente', 'CSAT', 'Qtd', 'Media']], df_final)
+                    
+                    st.download_button(
+                        label="📥 Baixar Relatório Excel (Completo)",
+                        data=excel_data,
+                        file_name=f"relatorio_satisfacao_{datetime.today().strftime('%Y-%m-%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
