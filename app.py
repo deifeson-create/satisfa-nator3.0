@@ -17,17 +17,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTADO ---
+# --- ESTADO (Memória da Sessão) ---
 if "app_access" not in st.session_state: st.session_state["app_access"] = False
 if "token" not in st.session_state: st.session_state["token"] = None
 if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
 if "servicos_list" not in st.session_state: st.session_state["servicos_list"] = [] 
+# Novo estado para armazenar os dados brutos baixados e permitir filtragem posterior
+if "df_raw_cache" not in st.session_state: st.session_state["df_raw_cache"] = None
 
-# IDs CRÍTICOS
+# IDs CRÍTICOS (Filtros de Exclusão)
 ID_PESQUISA_V3 = "43"
 ID_PERGUNTA_IGNORAR_V3 = "40" 
 
-# --- SEGREDOS ---
+# --- SEGREDOS (Credenciais) ---
 try:
     SECRET_SYS_PASS = st.secrets["geral"]["senha_sistema"]
     API_URL_SECRET = st.secrets["api"]["url"]
@@ -246,13 +248,20 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
 
 def gerar_excel(df_resumo, df_brutos):
     """
-    Gera Excel. Tenta usar xlsxwriter para gráficos. 
-    Se falhar, usa openpyxl (padrão) apenas com dados.
+    Gera Excel BLINDADO. 
+    Tenta usar xlsxwriter para gráficos. Se não tiver, usa openpyxl apenas com dados.
     """
     output = io.BytesIO()
     
+    cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
+    cols_existentes = [c for c in cols_export if c in df_brutos.columns]
+    df_brutos_clean = df_brutos[cols_existentes].copy()
+    
+    if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
+            df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
+
     try:
-        # Tenta modo COMPLETO (Com Gráficos)
+        # Tenta modo COMPLETO (Com Gráficos) - requer xlsxwriter
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
             workbook = writer.book
@@ -270,28 +279,14 @@ def gerar_excel(df_resumo, df_brutos):
             chart.set_y_axis({'name': 'CSAT (%)', 'max': 100})
             worksheet.insert_chart('E2', chart)
             
-            cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
-            cols_existentes = [c for c in cols_export if c in df_brutos.columns]
-            df_brutos_clean = df_brutos[cols_existentes].copy()
-            
-            if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
-                 df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
-            
             df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
             
-    except ModuleNotFoundError:
-        # Modo DE SEGURANÇA (Sem Gráficos)
+    except ImportError:
+        # Modo DE SEGURANÇA (Sem Gráficos) - usa openpyxl (padrão)
+        # Reseta o buffer para não misturar dados corrompidos
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
-            
-            cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
-            cols_existentes = [c for c in cols_export if c in df_brutos.columns]
-            df_brutos_clean = df_brutos[cols_existentes].copy()
-            
-            if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
-                 df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
-            
             df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
             
     return output.getvalue()
@@ -340,9 +335,10 @@ else:
         st.markdown("---")
         limit_page = st.slider("Itens por Requisição", 50, 500, 100, 50)
         st.divider()
-        if st.button("Sair"):
+        if st.button("Limpar Tudo / Sair"):
             st.session_state["token"] = None
             st.session_state["app_access"] = False
+            st.session_state["df_raw_cache"] = None
             st.rerun()
 
     st.title("Painel de Satisfação (Big Data)")
@@ -365,6 +361,9 @@ else:
                 st.session_state["pesquisas_list"] = listar_pesquisas(API_URL_SECRET, st.session_state["token"], contas_sel, ini, fim)
                 st.session_state["servicos_list"] = listar_servicos_api(API_URL_SECRET, st.session_state["token"], contas_sel[0], ini, fim)
                 
+                # Reseta o cache de dados se mudar a busca
+                st.session_state["df_raw_cache"] = None 
+                
                 if not st.session_state["pesquisas_list"]: 
                     st.toast("Nenhuma pesquisa encontrada!", icon="⚠️")
                 else: 
@@ -373,29 +372,19 @@ else:
 
     if st.session_state["pesquisas_list"] or uploaded_files:
         with st.container(border=True):
-            st.markdown("#### Configuração do Relatório")
+            st.markdown("#### 1. Coleta de Dados")
             
             opts = {f"{p['id']} - {p['nome']}": p['id'] for p in st.session_state["pesquisas_list"]}
             defs = [k for k in opts.keys() if any(x in k for x in ["35", "43", "5"])]
             sels = st.multiselect("Pesquisas", list(opts.keys()), default=defs, label_visibility="collapsed")
             p_ids = [opts[s] for s in sels]
             
-            c_setor, c_servico = st.columns(2)
-            
-            with c_setor:
-                setor_sel = st.selectbox("Filtrar Setor (Inteligente)", ["TODOS"] + list(SETORES_AGENTES.keys()) + ["OUTROS"])
-            
-            with c_servico:
-                opcoes_servico = st.session_state.get("servicos_list", [])
-                servicos_sel = st.multiselect("Filtrar Serviços (API)", options=opcoes_servico, placeholder="Selecione serviços específicos (Opcional)")
-                if not opcoes_servico: st.caption("⚠️ Nenhum serviço encontrado ou busca pendente.")
+            # Botão para BAIXAR (não gera relatório ainda, só baixa)
+            baixar = st.button("⬇️ Baixar Dados e Processar", type="primary", use_container_width=True)
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            gerar = st.button("🚀 GERAR (Fatiado & Filtrado)", type="primary", use_container_width=True)
-
-        if gerar:
+        # Lógica de Download e Cache
+        if baixar:
             raw_data = []
-            
             if p_ids:
                 raw_data = baixar_dados_fracionado(API_URL_SECRET, st.session_state["token"], contas_sel, p_ids, ini, fim, limit_page)
             
@@ -416,12 +405,10 @@ else:
                         df_t['dat_resposta'] = pd.to_datetime(df_t['dat_resposta'], dayfirst=True, errors='coerce')
                         raw_data.extend(df_t.to_dict(orient='records'))
                     except: pass
-
-            if not raw_data:
-                st.error("Nenhum dado encontrado após processar todos os períodos.")
-            else:
+            
+            if raw_data:
+                # Processamento Inicial
                 df = pd.DataFrame(raw_data)
-                
                 df['Nota'] = pd.to_numeric(df['nom_valor'], errors='coerce').fillna(-1) 
                 df = df[df['Nota'] >= 0] 
                 df['Nota'] = df['Nota'].astype(int)
@@ -432,83 +419,119 @@ else:
                 df['Setor'] = df['Agente'].apply(get_setor)
                 df['Nome_Conta'] = df['conta_origem_id'].map(CONTAS_FIXAS).fillna("Outra")
                 df['Link'] = df['num_protocolo'].apply(criar_link_atendimento)
-                
                 if 'nom_servico' not in df.columns: df['Serviço'] = "N/A"
                 else: df['Serviço'] = df['nom_servico'].astype(str).str.upper().replace('NAN', 'N/A')
                 
-                # --- FILTRAGEM INTELIGENTE REFINADA (Exclusão Cruzada) ---
-                df_final = df.copy()
-                
-                if setor_sel != "TODOS":
-                    # 1. Serviços que os agentes deste setor tocam
-                    servicos_vinculados = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
-                    
-                    # 2. Critérios de Inclusão:
-                    # A) É Oficialmente do setor?
-                    is_official = (df_final['Setor'] == setor_sel)
-                    
-                    # B) É "OUTROS" (sem dono) mas fez o serviço do setor?
-                    is_orphan_doing_service = (df_final['Setor'] == 'OUTROS') & (df_final['Serviço'].isin(servicos_vinculados))
-                    
-                    # A lógica aqui é: Se o agente é do SUPORTE (setor != selecionado e setor != OUTROS), ele é excluído automaticamente
-                    # pois não atende nem A nem B.
-                    df_final = df_final[is_official | is_orphan_doing_service]
-                
-                if servicos_sel:
-                    df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
-                
-                if df_final.empty:
-                    st.warning("Sem dados para este conjunto de filtros.")
-                else:
-                    total = len(df_final)
-                    prom = len(df_final[df_final['Nota'] >= 8])
-                    csat = (prom / total * 100)
-                    media = df_final['Nota'].mean()
+                # Salva no Cache para não perder ao interagir com filtros
+                st.session_state["df_raw_cache"] = df
+                st.rerun() # Recarrega a página para mostrar os filtros abaixo
+            else:
+                st.error("Nenhum dado encontrado para o período/pesquisa.")
 
-                    st.markdown("### Resultados")
-                    k1, k2, k3, k4 = st.columns(4)
-                    k1.metric("Total", total)
-                    k2.metric("Promotores", prom)
-                    k3.metric("CSAT", f"{csat:.2f}%")
-                    k4.metric("Média", f"{media:.2f}")
-                    
-                    st.divider()
-                    
-                    trend = df_final.groupby('Dia').agg(Total=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum())).reset_index()
-                    trend['Sat'] = (trend['Prom']/trend['Total']*100).round(2)
-                    fig = px.line(trend, x='Dia', y='Sat', markers=True, title="Evolução", text='Sat')
-                    fig.update_traces(line_color='#2563eb', textposition="top center")
-                    fig.update_layout(yaxis_range=[0, 115], height=300)
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.divider()
-                    
-                    col_rank, col_pie = st.columns([2, 1])
-                    rank = df_final.groupby('Agente').agg(Qtd=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum()), Media=('Nota', 'mean')).reset_index()
-                    rank['CSAT'] = (rank['Prom']/rank['Qtd']*100).round(2)
-                    rank = rank.sort_values('CSAT', ascending=False)
-                    
-                    with col_rank:
-                        st.dataframe(
-                            rank[['Agente', 'CSAT', 'Qtd', 'Media']],
-                            column_config={"CSAT": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100)},
-                            hide_index=True, use_container_width=True
-                        )
-                    with col_pie:
-                        fig_pie = go.Figure(data=[go.Pie(labels=['Prom', 'Outros'], values=[prom, total-prom], hole=.6, marker_colors=['#10b981', '#ef4444'])])
-                        fig_pie.update_layout(showlegend=False, height=250, margin=dict(t=0,b=0,l=0,r=0), annotations=[dict(text=f"{csat:.2f}%", x=0.5, y=0.5, font_size=20, showarrow=False)])
-                        st.plotly_chart(fig_pie, use_container_width=True)
-                    
-                    st.subheader("Base de Dados")
-                    st.dataframe(df_final[['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']], hide_index=True, use_container_width=True, column_config={"Link": st.column_config.LinkColumn("Ver", display_text="Abrir"), "Data": st.column_config.DatetimeColumn(format="D/M/Y H:m")})
-                    
-                    st.divider()
-                    excel_data = gerar_excel(rank[['Agente', 'CSAT', 'Qtd', 'Media']], df_final)
-                    
-                    st.download_button(
-                        label="📥 Baixar Relatório Excel (Completo)",
-                        data=excel_data,
-                        file_name=f"relatorio_satisfacao_{datetime.today().strftime('%Y-%m-%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+        # --- SEGUNDA ETAPA: FILTROS E RELATÓRIOS (SÓ APARECE SE TIVER DADOS) ---
+        if st.session_state["df_raw_cache"] is not None:
+            df = st.session_state["df_raw_cache"].copy()
+            
+            st.divider()
+            
+            # --- AQUI ESTÁ A "CAIXINHA" DE PLANTÃO QUE VOCÊ PEDIU ---
+            with st.expander("🛑 Configuração de Plantão / Exclusões Manuais (Clique para Expandir)", expanded=True):
+                st.info("Selecione abaixo os agentes que estão de PLANTÃO ou FÉRIAS para removê-los deste relatório.")
+                
+                # Lista única de todos os agentes encontrados nos dados baixados
+                todos_agentes = sorted(df['Agente'].unique())
+                
+                # O usuario marca quem quer TIRAR
+                agentes_plantao = st.multiselect(
+                    "Agentes para DESCONSIDERAR (Plantão/Ignorar):", 
+                    options=todos_agentes,
+                    placeholder="Selecione os agentes..."
+                )
+                
+                # Filtra o DataFrame removendo os marcados
+                if agentes_plantao:
+                    df = df[~df['Agente'].isin(agentes_plantao)]
+                    st.caption(f"Removendo {len(agentes_plantao)} agentes da análise.")
+
+            # Filtros de Negócio (Setor/Serviço)
+            with st.container(border=True):
+                st.markdown("#### 2. Filtros de Análise")
+                c_setor, c_servico = st.columns(2)
+                
+                with c_setor:
+                    setor_sel = st.selectbox("Filtrar Setor (Inteligente)", ["TODOS"] + list(SETORES_AGENTES.keys()) + ["OUTROS"])
+                
+                with c_servico:
+                    opcoes_servico = st.session_state.get("servicos_list", [])
+                    servicos_sel = st.multiselect("Filtrar Serviços (API)", options=opcoes_servico, placeholder="Selecione serviços específicos (Opcional)")
+
+            # Aplicação dos Filtros de Negócio
+            df_final = df.copy()
+            
+            if setor_sel != "TODOS":
+                servicos_vinculados = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
+                is_official = (df_final['Setor'] == setor_sel)
+                is_orphan_doing_service = (df_final['Setor'] == 'OUTROS') & (df_final['Serviço'].isin(servicos_vinculados))
+                df_final = df_final[is_official | is_orphan_doing_service]
+            
+            if servicos_sel:
+                df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
+            
+            # --- EXIBIÇÃO DOS RESULTADOS ---
+            if df_final.empty:
+                st.warning("Sem dados para este conjunto de filtros (ou todos os agentes foram removidos).")
+            else:
+                total = len(df_final)
+                prom = len(df_final[df_final['Nota'] >= 8])
+                csat = (prom / total * 100)
+                media = df_final['Nota'].mean()
+
+                st.markdown("### Resultados")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Total", total)
+                k2.metric("Promotores", prom)
+                k3.metric("CSAT", f"{csat:.2f}%")
+                k4.metric("Média", f"{media:.2f}")
+                
+                st.divider()
+                
+                trend = df_final.groupby('Dia').agg(Total=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum())).reset_index()
+                trend['Sat'] = (trend['Prom']/trend['Total']*100).round(2)
+                fig = px.line(trend, x='Dia', y='Sat', markers=True, title="Evolução", text='Sat')
+                fig.update_traces(line_color='#2563eb', textposition="top center")
+                fig.update_layout(yaxis_range=[0, 115], height=300)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.divider()
+                
+                col_rank, col_pie = st.columns([2, 1])
+                rank = df_final.groupby('Agente').agg(Qtd=('Nota', 'count'), Prom=('Nota', lambda x: (x>=8).sum()), Media=('Nota', 'mean')).reset_index()
+                rank['CSAT'] = (rank['Prom']/rank['Qtd']*100).round(2)
+                rank = rank.sort_values('CSAT', ascending=False)
+                
+                with col_rank:
+                    st.dataframe(
+                        rank[['Agente', 'CSAT', 'Qtd', 'Media']],
+                        column_config={"CSAT": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100)},
+                        hide_index=True, use_container_width=True
                     )
+                with col_pie:
+                    fig_pie = go.Figure(data=[go.Pie(labels=['Prom', 'Outros'], values=[prom, total-prom], hole=.6, marker_colors=['#10b981', '#ef4444'])])
+                    fig_pie.update_layout(showlegend=False, height=250, margin=dict(t=0,b=0,l=0,r=0), annotations=[dict(text=f"{csat:.2f}%", x=0.5, y=0.5, font_size=20, showarrow=False)])
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                
+                st.subheader("Base de Dados")
+                st.dataframe(df_final[['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']], hide_index=True, use_container_width=True, column_config={"Link": st.column_config.LinkColumn("Ver", display_text="Abrir"), "Data": st.column_config.DatetimeColumn(format="D/M/Y H:m")})
+                
+                st.divider()
+                
+                # Excel com fallback seguro
+                excel_data = gerar_excel(rank[['Agente', 'CSAT', 'Qtd', 'Media']], df_final)
+                
+                st.download_button(
+                    label="📥 Baixar Relatório Excel (Completo)",
+                    data=excel_data,
+                    file_name=f"relatorio_satisfacao_{datetime.today().strftime('%Y-%m-%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
