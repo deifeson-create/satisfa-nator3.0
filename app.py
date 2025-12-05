@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import time
-import io # Importante para criar o arquivo na memória
+import io
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -23,9 +23,9 @@ if "token" not in st.session_state: st.session_state["token"] = None
 if "pesquisas_list" not in st.session_state: st.session_state["pesquisas_list"] = []
 if "servicos_list" not in st.session_state: st.session_state["servicos_list"] = [] 
 
-# IDs CRÍTICOS (Mapeados dos arquivos)
+# IDs CRÍTICOS
 ID_PESQUISA_V3 = "43"
-ID_PERGUNTA_IGNORAR_V3 = "40" # ID da pergunta de Internet (Técnico)
+ID_PERGUNTA_IGNORAR_V3 = "40" 
 
 # --- SEGREDOS ---
 try:
@@ -95,18 +95,11 @@ def listar_pesquisas(base_url, token, lista_contas, d_ini, d_fim):
     return list({v['id']: v for v in encontradas}.values())
 
 def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
-    """
-    Busca os serviços ativos na conta usando o relatório estatístico.
-    Inclui estratégia de fallback para evitar timeouts em períodos longos.
-    """
     url = f"{base_url}/rest/v2/relAtEstatistico" 
     headers = {"Authorization": f"Bearer {token}"}
     servicos_encontrados = set()
     
     with st.spinner("Carregando serviços da conta..."):
-        
-        # --- ESTRATÉGIA 1: Tenta o período completo ---
-        sucesso_full = False
         try:
             params = {
                 "data_inicial": d_ini.strftime("%Y-%m-%d 00:00:00"),
@@ -115,28 +108,21 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                 "agrupador": "servico",
                 "limit": 500 
             }
-            # Timeout aumentado para 25s
             r = requests.get(url, headers=headers, params=params, timeout=25)
-            
             if r.status_code == 200:
                 data = r.json()
                 rows = data if isinstance(data, list) else data.get("rows", [])
-                if rows:
-                    sucesso_full = True
-                    for row in rows:
-                        nome = row.get("agrupador") 
-                        if nome and nome != "ATENDIMENTO AUTOMATICO":
-                            servicos_encontrados.add(str(nome).upper())
+                for row in rows:
+                    nome = row.get("agrupador") 
+                    if nome and nome != "ATENDIMENTO AUTOMATICO":
+                        servicos_encontrados.add(str(nome).upper())
         except Exception:
-            pass # Falha silenciosa para ir para o fallback
+            pass 
 
-        # --- ESTRATÉGIA 2: Fallback (Últimos 30 dias) ---
-        # Se a busca completa falhou ou veio vazia, tenta pegar só os últimos 30 dias
         if not servicos_encontrados:
             try:
                 dt_fallback_ini = d_fim - timedelta(days=30)
                 if dt_fallback_ini < d_ini: dt_fallback_ini = d_ini 
-
                 params_fallback = {
                     "data_inicial": dt_fallback_ini.strftime("%Y-%m-%d 00:00:00"),
                     "data_final": d_fim.strftime("%Y-%m-%d 23:59:59"),
@@ -144,9 +130,7 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                     "agrupador": "servico",
                     "limit": 500
                 }
-                
                 r = requests.get(url, headers=headers, params=params_fallback, timeout=15)
-                
                 if r.status_code == 200:
                     data = r.json()
                     rows = data if isinstance(data, list) else data.get("rows", [])
@@ -154,9 +138,8 @@ def listar_servicos_api(base_url, token, id_conta, d_ini, d_fim):
                         nome = row.get("agrupador") 
                         if nome and nome != "ATENDIMENTO AUTOMATICO":
                             servicos_encontrados.add(str(nome).upper())
-                    
                     if servicos_encontrados:
-                        st.toast("⚠️ Período longo: serviços listados com base nos últimos 30 dias.", icon="ℹ️")
+                        st.toast("⚠️ Serviços carregados (Base: últimos 30 dias)", icon="ℹ️")
             except Exception:
                 pass
 
@@ -224,7 +207,6 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                         for bloco in data:
                             cod_pergunta = str(bloco.get("cod_pergunta", ""))
                             nom_pergunta = str(bloco.get("nom_pergunta", "")).lower()
-                            
                             nome_servico = bloco.get("nom_servico") or bloco.get("servico") or "N/A"
 
                             if str(id_pesquisa) == ID_PESQUISA_V3 and cod_pergunta == ID_PERGUNTA_IGNORAR_V3: continue
@@ -234,7 +216,6 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
                             for resp in respostas:
                                 protocolo = str(resp.get("num_protocolo", ""))
                                 agente = str(resp.get("nom_agente", "DESCONHECIDO"))
-                                
                                 servico_final = nome_servico
                                 if servico_final == "N/A":
                                     servico_final = resp.get("nom_servico") or resp.get("servico") or "N/A"
@@ -263,57 +244,62 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
     status_text.empty()
     return list(dados_unicos.values())
 
-# --- FUNÇÃO NOVA: GERAR EXCEL ---
+# --- FUNÇÃO ATUALIZADA: GERAR EXCEL COM FALLBACK ---
 def gerar_excel(df_resumo, df_brutos):
     """
-    Gera um arquivo Excel com duas abas:
-    1. Resumo (Com gráfico nativo do Excel)
-    2. Dados Brutos
+    Gera Excel. Tenta usar xlsxwriter para gráficos. 
+    Se falhar (biblioteca ausente), usa openpyxl (padrão) apenas com dados.
     """
     output = io.BytesIO()
     
-    # Usando xlsxwriter como engine para poder criar gráficos
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        
-        # --- ABA 1: RESUMO ---
-        df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
-        
-        workbook = writer.book
-        worksheet = writer.sheets['Resumo']
-        
-        # Criar Gráfico de Colunas no Excel
-        chart = workbook.add_chart({'type': 'column'})
-        
-        # Configurar série de dados para o gráfico
-        # Assume que: Col A = Agente, Col B = CSAT
-        # (rows=len(df)+1 para conta cabeçalho)
-        max_row = len(df_resumo) + 1
-        
-        chart.add_series({
-            'name':       'Satisfação (CSAT %)',
-            'categories': ['Resumo', 1, 0, max_row - 1, 0], # Coluna A (Agentes)
-            'values':     ['Resumo', 1, 1, max_row - 1, 1], # Coluna B (CSAT)
-            'gap':        20,
-        })
-        
-        chart.set_title({'name': 'Ranking de Satisfação por Agente'})
-        chart.set_y_axis({'name': 'CSAT (%)', 'max': 100})
-        chart.set_x_axis({'name': 'Agente'})
-        
-        # Inserir o gráfico na planilha
-        worksheet.insert_chart('E2', chart)
-        
-        # --- ABA 2: DADOS BRUTOS ---
-        # Selecionar colunas úteis para exportação
-        cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
-        df_brutos_clean = df_brutos[cols_export].copy()
-        
-        # Remover timezone para evitar erro no Excel
-        if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
-             df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
-
-        df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
-        
+    try:
+        # Tenta modo COMPLETO (Com Gráficos)
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            # Aba 1: Resumo
+            df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
+            workbook = writer.book
+            worksheet = writer.sheets['Resumo']
+            
+            # Gráfico
+            chart = workbook.add_chart({'type': 'column'})
+            max_row = len(df_resumo) + 1
+            chart.add_series({
+                'name':       'Satisfação (CSAT %)',
+                'categories': ['Resumo', 1, 0, max_row - 1, 0],
+                'values':     ['Resumo', 1, 1, max_row - 1, 1],
+                'gap':        20,
+            })
+            chart.set_title({'name': 'Ranking de Satisfação'})
+            chart.set_y_axis({'name': 'CSAT (%)', 'max': 100})
+            worksheet.insert_chart('E2', chart)
+            
+            # Aba 2: Dados Brutos
+            cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
+            # Garante que as colunas existem antes de selecionar
+            cols_existentes = [c for c in cols_export if c in df_brutos.columns]
+            df_brutos_clean = df_brutos[cols_existentes].copy()
+            
+            if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
+                 df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
+            
+            df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
+            
+    except ModuleNotFoundError:
+        # Modo DE SEGURANÇA (Sem Gráficos, apenas dados)
+        # Reseta o buffer
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
+            
+            cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
+            cols_existentes = [c for c in cols_export if c in df_brutos.columns]
+            df_brutos_clean = df_brutos[cols_existentes].copy()
+            
+            if pd.api.types.is_datetime64_any_dtype(df_brutos_clean['Data']):
+                 df_brutos_clean['Data'] = df_brutos_clean['Data'].dt.strftime('%d/%m/%Y %H:%M:%S')
+            
+            df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
+            
     return output.getvalue()
 
 # ==============================================================================
@@ -456,7 +442,6 @@ else:
                 if 'nom_servico' not in df.columns: df['Serviço'] = "N/A"
                 else: df['Serviço'] = df['nom_servico'].astype(str).str.upper().replace('NAN', 'N/A')
                 
-                # --- FILTRAGEM INTELIGENTE ---
                 df_final = df.copy()
                 
                 if setor_sel != "TODOS":
@@ -512,7 +497,6 @@ else:
                     st.subheader("Base de Dados")
                     st.dataframe(df_final[['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']], hide_index=True, use_container_width=True, column_config={"Link": st.column_config.LinkColumn("Ver", display_text="Abrir"), "Data": st.column_config.DatetimeColumn(format="D/M/Y H:m")})
                     
-                    # --- BOTÃO DE EXPORTAÇÃO ---
                     st.divider()
                     excel_data = gerar_excel(rank[['Agente', 'CSAT', 'Qtd', 'Media']], df_final)
                     
