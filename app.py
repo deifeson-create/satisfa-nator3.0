@@ -244,23 +244,20 @@ def baixar_dados_fracionado(base_url, token, lista_contas, lista_pesquisas, d_in
     status_text.empty()
     return list(dados_unicos.values())
 
-# --- FUNÇÃO ATUALIZADA: GERAR EXCEL COM FALLBACK ---
 def gerar_excel(df_resumo, df_brutos):
     """
     Gera Excel. Tenta usar xlsxwriter para gráficos. 
-    Se falhar (biblioteca ausente), usa openpyxl (padrão) apenas com dados.
+    Se falhar, usa openpyxl (padrão) apenas com dados.
     """
     output = io.BytesIO()
     
     try:
         # Tenta modo COMPLETO (Com Gráficos)
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # Aba 1: Resumo
             df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
             workbook = writer.book
             worksheet = writer.sheets['Resumo']
             
-            # Gráfico
             chart = workbook.add_chart({'type': 'column'})
             max_row = len(df_resumo) + 1
             chart.add_series({
@@ -273,9 +270,7 @@ def gerar_excel(df_resumo, df_brutos):
             chart.set_y_axis({'name': 'CSAT (%)', 'max': 100})
             worksheet.insert_chart('E2', chart)
             
-            # Aba 2: Dados Brutos
             cols_export = ['Data', 'Nome_Conta', 'Setor', 'Agente', 'Serviço', 'Nota', 'nom_resposta', 'Link']
-            # Garante que as colunas existem antes de selecionar
             cols_existentes = [c for c in cols_export if c in df_brutos.columns]
             df_brutos_clean = df_brutos[cols_existentes].copy()
             
@@ -285,8 +280,7 @@ def gerar_excel(df_resumo, df_brutos):
             df_brutos_clean.to_excel(writer, sheet_name='Dados Brutos', index=False)
             
     except ModuleNotFoundError:
-        # Modo DE SEGURANÇA (Sem Gráficos, apenas dados)
-        # Reseta o buffer
+        # Modo DE SEGURANÇA (Sem Gráficos)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
@@ -442,12 +436,23 @@ else:
                 if 'nom_servico' not in df.columns: df['Serviço'] = "N/A"
                 else: df['Serviço'] = df['nom_servico'].astype(str).str.upper().replace('NAN', 'N/A')
                 
+                # --- FILTRAGEM INTELIGENTE REFINADA (Exclusão Cruzada) ---
                 df_final = df.copy()
                 
                 if setor_sel != "TODOS":
+                    # 1. Serviços que os agentes deste setor tocam
                     servicos_vinculados = df_final[df_final['Setor'] == setor_sel]['Serviço'].unique()
-                    mask_setor = (df_final['Setor'] == setor_sel) | (df_final['Serviço'].isin(servicos_vinculados))
-                    df_final = df_final[mask_setor]
+                    
+                    # 2. Critérios de Inclusão:
+                    # A) É Oficialmente do setor?
+                    is_official = (df_final['Setor'] == setor_sel)
+                    
+                    # B) É "OUTROS" (sem dono) mas fez o serviço do setor?
+                    is_orphan_doing_service = (df_final['Setor'] == 'OUTROS') & (df_final['Serviço'].isin(servicos_vinculados))
+                    
+                    # A lógica aqui é: Se o agente é do SUPORTE (setor != selecionado e setor != OUTROS), ele é excluído automaticamente
+                    # pois não atende nem A nem B.
+                    df_final = df_final[is_official | is_orphan_doing_service]
                 
                 if servicos_sel:
                     df_final = df_final[df_final['Serviço'].isin(servicos_sel)]
