@@ -44,7 +44,7 @@ except:
 CONTAS_FIXAS = {
     "1":  "117628-ATEL", "15": "ATEL Telecom", "14": "ATELAtivo-V2",
     "13": "ClienteInterno_V2", "12": "TráfegoPago_V2", "11": "SUPORTE ATIVO",
-    "9":  "Pascoa", "7":  "Tráfego pago", "5":  "CLIENTE INTERNO", "3":  "LABORATÓRIO"
+    "9":  "Pascoa", "7":  "Tráfego pago", "5":  "CLIENTE INTERNO", "3":  "LABORATÓRIO", "15", "16"
 }
 
 SETORES_AGENTES = {
